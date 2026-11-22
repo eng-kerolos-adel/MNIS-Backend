@@ -1,5 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
+import { Role } from '@prisma/client';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,8 +18,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: { sub: string }): Promise<AuthUser> {
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub }, select: { id: true, role: true, isActive: true, patientId: true, mustChangePassword: true } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: {
+        id: true, role: true, isActive: true, patientId: true, mustChangePassword: true,
+        patient: { select: { phoneVerifiedAt: true } },
+      },
+    });
     if (!user || !user.isActive) throw new UnauthorizedException();
-    return { id: user.id, role: user.role, patientId: user.patientId, mustChangePassword: user.mustChangePassword };
+    const phoneVerified = user.role !== Role.PATIENT || Boolean(user.patient?.phoneVerifiedAt);
+    return { id: user.id, role: user.role, patientId: user.patientId, mustChangePassword: user.mustChangePassword, phoneVerified };
   }
 }

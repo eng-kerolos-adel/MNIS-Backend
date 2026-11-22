@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  HttpCode,
   Post,
   Patch,
   Delete,
@@ -10,11 +11,13 @@ import {
   Module,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { NotifType } from '@prisma/client';
 import { IsString, IsEnum, IsOptional } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { PrismaModule } from '../prisma/prisma.module';
-import { Audit, CurrentUser, AuthUser } from '../common/decorators';
+import { Audit, AllowUnverifiedPhone, CurrentUser, AuthUser } from '../common/decorators';
+import { FirebaseAdminService } from '../firebase/firebase-admin.service';
 
 // --- DTOs ---
 export class RegisterTokenDto {
@@ -33,7 +36,10 @@ export class UnregisterTokenDto {
 // --- Service ---
 @Injectable()
 export class NotificationsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private firebase: FirebaseAdminService,
+  ) {}
 
   async registerToken(userId: string, token: string, platform: string) {
     return this.prisma.pushToken.upsert({
@@ -49,16 +55,15 @@ export class NotificationsService {
     });
   }
 
-  async sendToUser(
+  async sendToUserWithDelivery(
     userId: string,
     type: NotifType,
     titleEn: string,
     titleAr: string,
     bodyEn: string,
     bodyAr: string,
-    data: any = {}
+    data: any = {},
   ) {
-    // 1. Log to DB
     const notif = await this.prisma.pushNotification.create({
       data: {
         userId,
@@ -71,46 +76,54 @@ export class NotificationsService {
       },
     });
 
-    // 2. Fetch user's tokens
-    const tokens = await this.prisma.pushToken.findMany({
-      where: { userId },
-    });
+    const [tokens, unreadCount] = await Promise.all([
+      this.prisma.pushToken.findMany({ where: { userId } }),
+      this.prisma.pushNotification.count({ where: { userId, readAt: null } }),
+    ]);
 
-    if (tokens.length === 0) return notif;
+    const payloadData = data && typeof data === 'object' ? data : {};
+    const [, delivery] = await Promise.all([
+      this.firebase.pushUserSignal(userId, type, unreadCount).catch(() => undefined),
+      tokens.length > 0
+        ? this.firebase.sendPushNotification(
+            tokens.map((t) => t.token),
+            { titleEn, titleAr, bodyEn, bodyAr, type, data: payloadData },
+          )
+        : Promise.resolve({ sent: 0, invalidTokens: [] as string[] }),
+    ]);
 
-    // 3. Send via FCM (stub for free tier without google-auth-library)
-    const serverKey = process.env.FCM_SERVER_KEY;
-    if (serverKey) {
-      const fetchPromises = tokens.map(t => 
-        fetch('https://fcm.googleapis.com/fcm/send', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `key=${serverKey}`
-          },
-          body: JSON.stringify({
-            to: t.token,
-            notification: {
-              title: titleEn, // Defaulting to EN for payload, localization handled by app usually, or send both in data
-              body: bodyEn
-            },
-            data: {
-              ...data,
-              type,
-              titleEn,
-              titleAr,
-              bodyEn,
-              bodyAr
-            }
-          })
-        }).catch(err => console.error('FCM send error:', err))
-      );
-      
-      // Fire and forget
-      Promise.all(fetchPromises);
+    if (delivery.invalidTokens.length > 0) {
+      await this.prisma.pushToken.deleteMany({
+        where: { token: { in: delivery.invalidTokens } },
+      });
     }
 
-    return notif;
+    return {
+      notification: notif,
+      tokensCount: tokens.length,
+      delivery,
+    };
+  }
+
+  async sendToUser(
+    userId: string,
+    type: NotifType,
+    titleEn: string,
+    titleAr: string,
+    bodyEn: string,
+    bodyAr: string,
+    data: any = {},
+  ) {
+    const { notification } = await this.sendToUserWithDelivery(
+      userId,
+      type,
+      titleEn,
+      titleAr,
+      bodyEn,
+      bodyAr,
+      data,
+    );
+    return notification;
   }
 
   async getMyNotifications(userId: string) {
@@ -122,10 +135,15 @@ export class NotificationsService {
   }
 
   async markRead(userId: string, notifId: string) {
-    return this.prisma.pushNotification.updateMany({
+    const res = await this.prisma.pushNotification.updateMany({
       where: { id: notifId, userId },
       data: { readAt: new Date() },
     });
+    const unreadCount = await this.prisma.pushNotification.count({
+      where: { userId, readAt: null },
+    });
+    await this.firebase.pushUserSignal(userId, 'READ', unreadCount).catch(() => undefined);
+    return res;
   }
 }
 
@@ -137,11 +155,13 @@ export class NotificationsService {
 export class NotificationsController {
   constructor(private svc: NotificationsService) {}
 
+  @AllowUnverifiedPhone()
   @Post('token')
   registerToken(@Body() dto: RegisterTokenDto, @CurrentUser() user: AuthUser) {
     return this.svc.registerToken(user.id, dto.token, dto.platform);
   }
 
+  @AllowUnverifiedPhone()
   @Delete('token')
   unregisterToken(@Body() dto: UnregisterTokenDto, @CurrentUser() user: AuthUser) {
     return this.svc.unregisterToken(user.id, dto.token);

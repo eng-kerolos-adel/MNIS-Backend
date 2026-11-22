@@ -16,6 +16,12 @@ const schema = z.object({
   SWAGGER_ENABLED: z.string().default('false'),
   // Number of reverse proxies in front of the API (Render = 1; Render behind Vercel rewrites = 2)
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(1),
+  // Optional Firebase integration (Admin SDK / Local Emulators / FCM HTTP v1 / Firestore real-time)
+  MNIS_FIREBASE_PROJECT_ID: z.string().optional(),
+  FIREBASE_PROJECT_ID: z.string().optional(),
+  FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),
+  FIREBASE_AUTH_EMULATOR_HOST: z.string().optional(),
+  FIRESTORE_EMULATOR_HOST: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -26,4 +32,6 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
-export const isProd = env.NODE_ENV === 'production';
+export const isProd =
+  env.NODE_ENV === 'production' ||
+  Boolean(process.env.K_SERVICE || process.env.FUNCTION_TARGET);

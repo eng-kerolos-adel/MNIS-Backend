@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
 import { PATIENT_PUBLIC_SELECT } from '../patients/patient.select';
 import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
+import { FirebaseAdminService } from '../firebase/firebase-admin.service';
 
 export class BedStatusDto { @IsEnum(BedStatus) status: BedStatus; }
 export class ErIntakeDto {
@@ -30,7 +31,53 @@ export class HospitalService {
   constructor(
     private prisma: PrismaService,
     private notifs: NotificationsService,
+    private firebase: FirebaseAdminService,
   ) {}
+
+  private extractFacilityTag(label?: string | null): string | null {
+    if (!label) return null;
+    const sep = ' — ';
+    const idx = label.indexOf(sep);
+    return idx >= 0 ? label.slice(idx + sep.length).trim() || null : null;
+  }
+
+  private async broadcastErSnapshot(u?: AuthUser, labelHint?: string | null) {
+    try {
+      let facilityEn = this.extractFacilityTag(labelHint);
+      if (!facilityEn && u?.id) {
+        const staff = await this.prisma.user.findUnique({ where: { id: u.id }, select: { facilityEn: true } });
+        facilityEn = staff?.facilityEn?.trim() || null;
+      }
+      const facLower = facilityEn?.toLowerCase() ?? null;
+      const [allBeds, activeEr] = await Promise.all([
+        this.prisma.bed.findMany({ select: { status: true, wardEn: true } }),
+        this.prisma.erCase.findMany({
+          where: { status: { in: ['TRIAGE', 'IN_TREATMENT', 'AWAITING_BED'] } },
+          select: { acuity: true, areaEn: true },
+        }),
+      ]);
+      const beds = facLower
+        ? allBeds.filter((b) => b.wardEn.toLowerCase().includes(facLower) || !b.wardEn.includes(' — '))
+        : allBeds;
+      const erCases = facLower
+        ? activeEr.filter((c) => {
+            const area = (c.areaEn ?? '').trim().toLowerCase();
+            if (!area) return true;
+            const other = (area.includes('hospital') || area.includes('medical center') || area.includes(' — ')) && !area.includes(facLower);
+            return !other;
+          })
+        : activeEr;
+
+      await this.firebase.syncLiveErSummary(facilityEn, {
+        availableBeds: beds.filter((b) => b.status === 'AVAILABLE').length,
+        occupiedBeds: beds.filter((b) => b.status === 'OCCUPIED').length,
+        erWaiting: erCases.length,
+        erCritical: erCases.filter((c) => c.acuity <= 2).length,
+      });
+    } catch {
+      /* non-blocking live sync */
+    }
+  }
 
   async beds(u?: AuthUser) {
     const allBeds = await this.prisma.bed.findMany({ include: bedInclude, orderBy: [{ wardEn: 'asc' }, { bedNumber: 'asc' }] });
@@ -46,12 +93,14 @@ export class HospitalService {
     return allBeds;
   }
 
-  async setBedStatus(id: string, status: BedStatus) {
+  async setBedStatus(id: string, status: BedStatus, u?: AuthUser) {
     if (status === 'OCCUPIED') throw new BadRequestException('USE_ADMIT_ENDPOINT_TO_OCCUPY');
     const bed = await this.prisma.bed.findUnique({ where: { id } });
     if (!bed) throw new NotFoundException();
     // Releasing a bed also releases its patient link.
-    return this.prisma.bed.update({ where: { id }, data: { status, patientId: null, acuity: null, admittedAt: null }, include: bedInclude });
+    const updated = await this.prisma.bed.update({ where: { id }, data: { status, patientId: null, acuity: null, admittedAt: null }, include: bedInclude });
+    void this.broadcastErSnapshot(u, updated.wardEn);
+    return updated;
   }
 
   async er(u?: AuthUser) {
@@ -89,16 +138,22 @@ export class HospitalService {
         areaAr = areaAr ? `${areaAr} — ${staff.facilityAr}` : staff.facilityAr;
       }
     }
-    return this.prisma.erCase.create({
+    const created = await this.prisma.erCase.create({
       data: { ...rest, areaEn, areaAr, vitals: (vitals ?? {}) as object },
       include: erInclude,
     });
+    void this.broadcastErSnapshot(u, created.areaEn);
+    return created;
   }
 
-  setErStatus(id: string, status: ErStatus) { return this.prisma.erCase.update({ where: { id }, data: { status }, include: erInclude }); }
+  async setErStatus(id: string, status: ErStatus, u?: AuthUser) {
+    const updated = await this.prisma.erCase.update({ where: { id }, data: { status }, include: erInclude });
+    void this.broadcastErSnapshot(u, updated.areaEn);
+    return updated;
+  }
 
   /** Atomic: the bed flip is conditional on AVAILABLE, and ER case flip is conditional on not already closed, so two nurses can never assign two beds or overwrite a bed. */
-  async admit(id: string, bedId: string) {
+  async admit(id: string, bedId: string, u?: AuthUser) {
     const admitted = await this.prisma.$transaction(async (tx) => {
       const c = await tx.erCase.findUnique({ where: { id } });
       if (!c) throw new NotFoundException('ER_CASE_NOT_FOUND');
@@ -137,6 +192,7 @@ export class HospitalService {
         { bedId: bed.id, bedNumber: bed.bedNumber },
       );
     }
+    void this.broadcastErSnapshot(u, bed?.wardEn ?? admitted.areaEn);
     return admitted;
   }
 }
@@ -147,11 +203,11 @@ export class HospitalService {
 export class HospitalController {
   constructor(private svc: HospitalService) {}
   @Get('beds') beds(@CurrentUser() u: AuthUser) { return this.svc.beds(u); }
-  @Patch('beds/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) setBed(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BedStatusDto) { return this.svc.setBedStatus(id, dto.status); }
+  @Patch('beds/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) setBed(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BedStatusDto, @CurrentUser() u: AuthUser) { return this.svc.setBedStatus(id, dto.status, u); }
   @Get('er') er(@CurrentUser() u: AuthUser) { return this.svc.er(u); }
   @Post('er') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) intake(@Body() dto: ErIntakeDto, @CurrentUser() u: AuthUser) { return this.svc.intake(dto, u); }
-  @Patch('er/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) setEr(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ErStatusDto) { return this.svc.setErStatus(id, dto.status); }
-  @Post('er/:id/admit') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) admit(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdmitDto) { return this.svc.admit(id, dto.bedId); }
+  @Patch('er/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) setEr(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ErStatusDto, @CurrentUser() u: AuthUser) { return this.svc.setErStatus(id, dto.status, u); }
+  @Post('er/:id/admit') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) admit(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdmitDto, @CurrentUser() u: AuthUser) { return this.svc.admit(id, dto.bedId, u); }
 }
 
 import { BloodBankController, BloodBankService } from './blood-bank.service';

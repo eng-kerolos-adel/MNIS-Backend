@@ -3,8 +3,8 @@ import { Throttle } from '@nestjs/throttler';
 import { ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
-import { ChangePasswordDto, LoginDto, RefreshDto } from './dto/auth.dto';
-import { AllowPasswordChange, CurrentUser, AuthUser, Public } from '../common/decorators';
+import { ChangePasswordDto, LoginDto, RefreshDto, VerifyPhoneDto } from './dto/auth.dto';
+import { AllowPasswordChange, AllowUnverifiedPhone, CurrentUser, AuthUser, Public } from '../common/decorators';
 import { env, isProd } from '../config/env';
 
 const COOKIE = 'mnis_rt';
@@ -56,8 +56,19 @@ export class AuthController {
     if (web && !dto.refreshToken) res.clearCookie(COOKIE, { path: '/v1/auth' });
   }
 
-  @AllowPasswordChange() @Get('me')
+  @AllowPasswordChange() @AllowUnverifiedPhone() @Get('me')
   me(@CurrentUser() user: AuthUser) { return this.auth.me(user.id); }
+
+  @AllowPasswordChange() @AllowUnverifiedPhone() @Get('phone-status')
+  phoneStatus(@CurrentUser() user: AuthUser) { return this.auth.getPhoneStatus(user.id); }
+
+  @AllowPasswordChange() @AllowUnverifiedPhone() @Throttle({ default: { limit: 10, ttl: 60_000 } }) @HttpCode(200) @Post('verify-phone')
+  verifyPhone(@CurrentUser() user: AuthUser, @Body() dto: VerifyPhoneDto) {
+    return this.auth.verifyCitizenPhone(user.id, dto.firebaseIdToken);
+  }
+
+  @AllowUnverifiedPhone() @Throttle({ default: { limit: 30, ttl: 60_000 } }) @HttpCode(200) @Post('firebase-token')
+  firebaseToken(@CurrentUser() user: AuthUser) { return this.auth.createFirebaseToken(user.id); }
 
   @Get('sessions')
   listSessions(@CurrentUser() user: AuthUser) { return this.auth.listSessions(user.id); }
@@ -65,7 +76,7 @@ export class AuthController {
   @HttpCode(200) @Post('sessions/revoke-all')
   revokeAllSessions(@CurrentUser() user: AuthUser) { return this.auth.revokeAllSessions(user.id); }
 
-  @AllowPasswordChange() @Throttle({ default: { limit: 5, ttl: 60_000 } }) @HttpCode(200) @Post('change-password')
+  @AllowPasswordChange() @AllowUnverifiedPhone() @Throttle({ default: { limit: 5, ttl: 60_000 } }) @HttpCode(200) @Post('change-password')
   changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto) {
     return this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword);
   }

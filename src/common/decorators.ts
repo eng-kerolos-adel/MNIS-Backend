@@ -15,11 +15,20 @@ export const ALLOW_PW_CHANGE = 'allowPwChange';
 /** Routes reachable while the account still has a temporary password (change-password, me, logout). */
 export const AllowPasswordChange = () => SetMetadata(ALLOW_PW_CHANGE, true);
 
+export const ALLOW_UNVERIFIED_PHONE = 'allowUnverifiedPhone';
+/**
+ * A citizen must confirm the mobile number registered at reception (Firebase SMS) before using
+ * the API. Only the routes needed to complete that step carry this decorator.
+ */
+export const AllowUnverifiedPhone = () => SetMetadata(ALLOW_UNVERIFIED_PHONE, true);
+
 export interface AuthUser {
   id: string;
   role: Role;
   patientId: string | null;
   mustChangePassword: boolean;
+  /** Always true for staff; for citizens true only after the SMS identity confirmation. */
+  phoneVerified: boolean;
 }
 
 export const CurrentUser = createParamDecorator((_: unknown, ctx: ExecutionContext): AuthUser => {

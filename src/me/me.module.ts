@@ -20,6 +20,7 @@ import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { CryptoService, CryptoModule } from '../common/crypto.service';
+import { maskPhone } from '../common/phone.util';
 import { Audit, CurrentUser, AuthUser, Roles } from '../common/decorators';
 
 // --- DTOs ---
@@ -109,6 +110,9 @@ export class MeService {
       sex: p.sex,
       birthDate: p.birthDate,
       bloodType: p.bloodType,
+      phone: p.phone,
+      phoneMasked: maskPhone(p.phone),
+      phoneVerifiedAt: p.phoneVerifiedAt,
       governorate: p.governorate,
       city: p.city,
       district: p.district,

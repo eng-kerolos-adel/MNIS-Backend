@@ -1,10 +1,14 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+﻿import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { NotifType, Role } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes, randomUUID } from 'crypto';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto.service';
+import { assertPhoneAvailable, maskPhone, normalizePhoneE164 } from '../common/phone.util';
+import { FirebaseAdminService } from '../firebase/firebase-admin.service';
+import { NotificationsService } from '../notifications/notifications.module';
 
 const MAX_FAILS = 5;
 const LOCK_MINUTES = 15;
@@ -13,13 +17,20 @@ export interface ClientMeta { ip?: string; userAgent?: string }
 
 @Injectable()
 export class AuthService {
-  constructor(private prisma: PrismaService, private jwt: JwtService, private crypto: CryptoService) {}
+  constructor(
+    private prisma: PrismaService,
+    private jwt: JwtService,
+    private crypto: CryptoService,
+    private firebase: FirebaseAdminService,
+    private notifs: NotificationsService,
+  ) {}
 
   async login(identifier: string, password: string, meta: ClientMeta) {
     const id = identifier.trim();
+    const include = { patient: { select: { phoneVerifiedAt: true } } };
     const user = /^\d{14}$/.test(id)
-      ? await this.prisma.user.findFirst({ where: { patient: { nationalIdIdx: this.crypto.blindIndex(id) } } })
-      : await this.prisma.user.findUnique({ where: { email: id.toLowerCase() } });
+      ? await this.prisma.user.findFirst({ where: { patient: { nationalIdIdx: this.crypto.blindIndex(id) } }, include })
+      : await this.prisma.user.findUnique({ where: { email: id.toLowerCase() }, include });
     // Same error for every failure mode: no user enumeration.
     const fail = () => new UnauthorizedException('INVALID_CREDENTIALS');
     if (!user || !user.isActive) { await argon2.hash(password).catch(() => undefined); throw fail(); }
@@ -55,6 +66,7 @@ export class AuthService {
         facilityAr: user.facilityAr,
         patientId: user.patientId,
         mustChangePassword: user.mustChangePassword,
+        phoneVerified: user.role !== Role.PATIENT || Boolean(user.patient?.phoneVerifiedAt),
       },
     };
   }
@@ -90,15 +102,90 @@ export class AuthService {
     if (row) await this.prisma.refreshToken.updateMany({ where: { familyId: row.familyId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
 
-  me(userId: string) {
-    return this.prisma.user.findUnique({
+  async me(userId: string) {
+    const u = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true, email: true, role: true, fullNameEn: true, fullNameAr: true,
         licenseNo: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true,
         patientId: true, mustChangePassword: true,
+        patient: { select: { phoneVerifiedAt: true } },
       },
     });
+    if (!u) return u;
+    const { patient, ...rest } = u;
+    return { ...rest, phoneVerified: u.role !== Role.PATIENT || Boolean(patient?.phoneVerifiedAt) };
+  }
+
+  async createFirebaseToken(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, facilityEn: true, patientId: true, isActive: true },
+    });
+    if (!user || !user.isActive) throw new UnauthorizedException();
+    return this.firebase.createCustomToken(user);
+  }
+
+  async getPhoneStatus(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { patient: { select: { phone: true, phoneVerifiedAt: true } } },
+    });
+    const phone = user?.patient?.phone ?? null;
+    const verifiedAt = user?.patient?.phoneVerifiedAt ?? null;
+    return {
+      hasPhone: Boolean(phone),
+      phoneE164: phone,
+      phoneMasked: maskPhone(phone),
+      verified: Boolean(phone && verifiedAt),
+      verifiedAt,
+    };
+  }
+
+  async verifyCitizenPhone(userId: string, firebaseIdToken: string) {
+    const decoded = await this.firebase.verifyIdToken(firebaseIdToken);
+    const verifiedPhone = normalizePhoneE164(decoded.phone_number);
+    if (!verifiedPhone) {
+      throw new BadRequestException('INVALID_FIREBASE_TOKEN');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, patientId: true, patient: { select: { id: true, phone: true } } },
+    });
+    if (!user?.patient) {
+      throw new BadRequestException('NO_PHONE_REGISTERED');
+    }
+    const registeredPhone = normalizePhoneE164(user.patient.phone);
+    if (!registeredPhone) {
+      throw new BadRequestException('NO_PHONE_REGISTERED');
+    }
+    if (registeredPhone !== verifiedPhone) {
+      throw new ForbiddenException('PHONE_MISMATCH');
+    }
+    await assertPhoneAvailable(this.prisma, registeredPhone, user.patient.id);
+
+    const verifiedAt = new Date();
+    await this.prisma.patient.update({
+      where: { id: user.patient.id },
+      data: { phoneVerifiedAt: verifiedAt },
+    });
+
+    await this.notifs.sendToUser(
+      user.id,
+      NotifType.GENERAL,
+      'Identity Verified',
+      'تم تأكيد هويتك بنجاح',
+      'Your reception-registered phone number has been verified in MNIS.',
+      'تم التحقق من رقم هاتفك المسجل لدى الاستقبال وتأكيد هويتك كمواطن في منظومة MNIS.',
+      { event: 'PHONE_VERIFIED' },
+    );
+
+    return {
+      verified: true,
+      phoneMasked: maskPhone(registeredPhone),
+      verifiedAt,
+    };
   }
 
   listSessions(userId: string) {

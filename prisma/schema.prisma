@@ -283,6 +283,8 @@ model Patient {
   sex               Sex
   birthDate         DateTime
   bloodType         String?
+  phone             String?   @unique // Normalized E.164 mobile registered by reception (e.g. +201012345678) — one citizen per number
+  phoneVerifiedAt   DateTime? // Populated after Firebase Phone Auth SMS OTP verification
   /// Structured address for GIS/epidemiology analytics
   governorate       String?   // e.g. "CAIRO", "GIZA", "ALEXANDRIA" …
   city              String?
@@ -296,6 +298,11 @@ model Patient {
   /// JSON arrays of { en, ar } bilingual objects
   chronicConditions Json      @default("[]")
   allergies         Json      @default("[]")
+  /// Ministry-confirmed citizen deletion request state
+  deletionRequestedAt     DateTime?
+  deletionReason          String?
+  deletionRequestedById   String?
+  deletionRequestedByName String?
   createdAt         DateTime  @default(now())
 
   user            User?

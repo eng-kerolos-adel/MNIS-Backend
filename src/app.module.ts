@@ -3,6 +3,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { CryptoModule } from './common/crypto.service';
+import { FirebaseModule } from './firebase/firebase.module';
 import { JwtAuthGuard, RolesGuard } from './common/guards';
 import { AuditInterceptor } from './common/audit.interceptor';
 import { AllExceptionsFilter } from './common/http-exception.filter';
@@ -27,7 +28,7 @@ import { HealthController } from './health/health.controller';
 @Module({
   imports: [
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
-    PrismaModule, CryptoModule, AuthModule, PatientsModule, QueueModule,
+    PrismaModule, CryptoModule, FirebaseModule, AuthModule, PatientsModule, QueueModule,
     PrescriptionsModule, LabModule, HospitalModule, AnalyticsModule,
     AdminModule, ReceptionModule, MeModule, AppointmentsModule,
     ReferralsModule, NfcCardsModule, DoctorScheduleModule, PharmacyModule,

@@ -16,3 +16,8 @@ export class ChangePasswordDto {
   @Matches(/(?=.*[A-Za-z])(?=.*\d)/, { message: 'password must contain letters and digits' })
   newPassword: string;
 }
+
+export class VerifyPhoneDto {
+  @IsString() @MinLength(20) @MaxLength(4096)
+  firebaseIdToken: string;
+}

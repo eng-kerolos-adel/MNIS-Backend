@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { IsBoolean, IsDateString, IsEnum, IsOptional, IsString, Length, Matches, MaxLength } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto.service';
+import { assertPhoneAvailable, normalizePhoneE164, rethrowPhoneConflict } from '../common/phone.util';
 import { PATIENT_PUBLIC_SELECT } from './patient.select';
 import { NotificationsService } from '../notifications/notifications.module';
 
@@ -14,6 +15,7 @@ export class CreatePatientDto {
   @IsEnum(Sex) sex: Sex;
   @IsDateString() birthDate: string;
   @IsOptional() @IsString() @MaxLength(4) bloodType?: string;
+  @IsOptional() @IsString() @MaxLength(20) phone?: string;
   @IsOptional() @IsString() @MaxLength(200) addressEn?: string;
   @IsOptional() @IsString() @MaxLength(200) addressAr?: string;
   @IsOptional() @IsBoolean() insuranceActive?: boolean;
@@ -89,17 +91,28 @@ export class PatientsService {
   }
 
   async create(dto: CreatePatientDto) {
-    const { nationalId, birthDate, ...rest } = dto;
-    return this.prisma.patient.create({
-      data: {
-        ...rest,
-        birthDate: new Date(birthDate),
-        nationalIdEnc: this.crypto.encrypt(nationalId),
-        nationalIdIdx: this.crypto.blindIndex(nationalId),
-        mti: `MTI-${randomBytes(6).toString('hex').toUpperCase()}`,
-      },
-      select: PATIENT_PUBLIC_SELECT,
-    });
+    const { nationalId, birthDate, phone, addressAr, addressEn, ...rest } = dto;
+    const cleanAddressAr = addressAr?.trim() || addressEn?.trim() || undefined;
+    const cleanAddressEn = addressEn?.trim() || addressAr?.trim() || undefined;
+    const normalizedPhone = normalizePhoneE164(phone);
+    await assertPhoneAvailable(this.prisma, normalizedPhone);
+    try {
+      return await this.prisma.patient.create({
+        data: {
+          ...rest,
+          addressAr: cleanAddressAr,
+          addressEn: cleanAddressEn,
+          phone: normalizedPhone,
+          birthDate: new Date(birthDate),
+          nationalIdEnc: this.crypto.encrypt(nationalId),
+          nationalIdIdx: this.crypto.blindIndex(nationalId),
+          mti: `MTI-${randomBytes(6).toString('hex').toUpperCase()}`,
+        },
+        select: PATIENT_PUBLIC_SELECT,
+      });
+    } catch (err) {
+      rethrowPhoneConflict(err);
+    }
   }
 
   listDocuments(patientId: string) {

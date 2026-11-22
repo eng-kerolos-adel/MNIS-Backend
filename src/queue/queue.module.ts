@@ -5,6 +5,7 @@ import { IsBoolean, IsEnum, IsOptional, IsString, IsUUID, MaxLength } from 'clas
 import { PrismaService } from '../prisma/prisma.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
 import { PATIENT_PUBLIC_SELECT } from '../patients/patient.select';
+import { FirebaseAdminService } from '../firebase/firebase-admin.service';
 
 export class CreateTicketDto {
   @IsUUID() patientId: string;
@@ -22,7 +23,42 @@ const include = { patient: { select: PATIENT_PUBLIC_SELECT } };
 
 @Injectable()
 export class QueueService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private firebase: FirebaseAdminService,
+  ) {}
+
+  private async broadcastQueueSnapshot(doctorId: string | null | undefined) {
+    if (!doctorId) return;
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const [waitingCount, emergencyWaitingCount, inConsultation, doctor] = await Promise.all([
+        this.prisma.visit.count({
+          where: { doctorId, status: 'WAITING', arrivedAt: { gte: todayStart } },
+        }),
+        this.prisma.visit.count({
+          where: { doctorId, status: 'WAITING', isEmergency: true, arrivedAt: { gte: todayStart } },
+        }),
+        this.prisma.visit.findFirst({
+          where: { doctorId, status: 'IN_CONSULTATION' },
+          orderBy: { calledAt: 'desc' },
+          select: { ticketNo: true },
+        }),
+        this.prisma.user.findUnique({
+          where: { id: doctorId },
+          select: { facilityEn: true },
+        }),
+      ]);
+      await this.firebase.syncLiveQueue(doctorId, doctor?.facilityEn, {
+        currentTicketNo: inConsultation?.ticketNo ?? null,
+        waitingCount,
+        emergencyWaitingCount,
+      });
+    } catch {
+      /* non-blocking live sync */
+    }
+  }
 
   private async hydrateVisits<T extends { doctorId: string | null }>(visits: T[]) {
     const ids = Array.from(new Set(visits.map((v) => v.doctorId).filter((x): x is string => !!x)));
@@ -88,6 +124,7 @@ export class QueueService {
       include,
     });
     const [hydrated] = await this.hydrateVisits([created]);
+    void this.broadcastQueueSnapshot(hydrated.doctorId);
     return hydrated;
   }
 
@@ -120,6 +157,7 @@ export class QueueService {
         const updated = await this.prisma.visit.findUnique({ where: { id: next.id }, include });
         if (!updated) throw new NotFoundException();
         const [hydrated] = await this.hydrateVisits([updated]);
+        void this.broadcastQueueSnapshot(hydrated.doctorId);
         return hydrated;
       }
     }
@@ -172,6 +210,7 @@ export class QueueService {
     }
 
     const [hydrated] = await this.hydrateVisits([updated]);
+    void this.broadcastQueueSnapshot(hydrated.doctorId);
     return hydrated;
   }
 }

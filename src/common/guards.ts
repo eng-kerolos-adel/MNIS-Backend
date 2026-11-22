@@ -2,7 +2,7 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { Role } from '@prisma/client';
-import { ALLOW_PW_CHANGE, IS_PUBLIC, ROLES_KEY } from './decorators';
+import { ALLOW_PW_CHANGE, ALLOW_UNVERIFIED_PHONE, IS_PUBLIC, ROLES_KEY } from './decorators';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
@@ -27,6 +27,9 @@ export class RolesGuard implements CanActivate {
     const allowPw = this.reflector.getAllAndOverride<boolean>(ALLOW_PW_CHANGE, [context.getHandler(), context.getClass()]);
     // A temporary password (issued by reception/admin) must be changed before anything else works.
     if (user?.mustChangePassword && !allowPw) throw new ForbiddenException('PASSWORD_CHANGE_REQUIRED');
+    // A citizen can't use anything until the mobile registered at reception is confirmed by SMS.
+    const allowUnverified = this.reflector.getAllAndOverride<boolean>(ALLOW_UNVERIFIED_PHONE, [context.getHandler(), context.getClass()]);
+    if (user && user.phoneVerified === false && !allowUnverified) throw new ForbiddenException('PHONE_VERIFICATION_REQUIRED');
     const roles = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [context.getHandler(), context.getClass()]);
     if (!roles || roles.length === 0) return true;
     if (!user || !roles.includes(user.role)) throw new ForbiddenException('INSUFFICIENT_ROLE');
