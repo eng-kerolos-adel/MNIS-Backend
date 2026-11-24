@@ -14,23 +14,27 @@ const enc = (plain) => {
 };
 const idx = (v) => crypto.createHmac('sha256', process.env.BLIND_INDEX_KEY).update(v).digest('hex');
 const sha256 = (v) => crypto.createHash('sha256').update(v).digest('hex');
+const hmacSign = (v) => crypto.createHmac('sha256', process.env.RX_SIGNING_KEY).update(v).digest('hex');
 
 async function main() {
   const pw = process.env.SEED_PASSWORD;
-  if (!pw || pw.length < 12) throw new Error('Set SEED_PASSWORD (12+ chars) to seed demo users');
+  if (!pw || pw.length < 12) throw new Error('Set SEED_PASSWORD (12+ chars) to seed institutional users');
+  if (!process.env.RX_SIGNING_KEY || process.env.RX_SIGNING_KEY.length < 32) {
+    throw new Error('Set RX_SIGNING_KEY (32+ chars) before running seed');
+  }
   const passwordHash = await argon2.hash(pw);
 
   // 1. Seed Staff & Executive Users
   const usersData = [
-    ['doctor@mnis.demo', 'DOCTOR', 'Dr. Tarek Mahmoud', 'د. طارق محمود', 'EGY-DOC-184920', 'Cardiology & Internal Medicine', 'أمراض القلب والباطنة', 'Cairo University Hospitals', 'مستشفيات جامعة القاهرة'],
-    ['doctor2@mnis.demo', 'DOCTOR', 'Dr. Nadia El-Sayed', 'د. نادية السيد', 'EGY-DOC-209311', 'Endocrinology & Diabetes', 'الغدد الصماء والسكري', 'Ain Shams Specialized Hospital', 'مستشفى عين شمس التخصصي'],
-    ['pharmacist@mnis.demo', 'PHARMACIST', 'Ph. Mona Ibrahim', 'ص. منى إبراهيم', 'PH-2291', 'Clinical Pharmacy', 'الصيدلة الإكلينيكية', 'MNIS Central Pharmacy', 'الصيدلية المركزية الموحدة'],
-    ['lab1@mnis.demo', 'LAB_TECH', 'Lab Tech One', 'أخصائي معمل أول', 'LB-4471', 'Hematology & Chemistry', 'أمراض الدم والكيمياء الحيوية', 'National Reference Lab', 'المعمل المرجعي القومي'],
-    ['lab2@mnis.demo', 'LAB_TECH', 'Dr. Amany Fahmy', 'د. أماني فهمي', 'LB-4472', 'Diagnostic Immunology', 'المناعة التشخيصية', 'National Reference Lab', 'المعمل المرجعي القومي'],
-    ['er@mnis.demo', 'HOSPITAL_STAFF', 'Nurse Hala Zaki', 'م. هالة ذكي', 'NR-1187', 'Emergency & Trauma Triage', 'فرز الطوارئ والحالات الحرجة', 'Kasr Al-Ainy Emergency Center', 'طوارئ قصر العيني'],
-    ['exec@mnis.demo', 'EXECUTIVE', 'Eng. Sami Farouk', 'م. سامي فاروق', null, 'National Health Command', 'غرفة القيادة الوطنية', 'Ministry of Health & Population', 'وزارة الصحة والسكان'],
-    ['reception@mnis.demo', 'RECEPTIONIST', 'Reception Desk', 'مكتب الاستقبال الموحد', null, 'Patient Registration', 'تسجيل المواطنين والبطاقات', 'Outpatient Complex', 'مجمع العيادات الخارجية'],
-    ['admin@mnis.demo', 'ADMIN', 'System Admin', 'مدير النظام السيادي', null, 'System Governance', 'حوكمة وأمن المعلومات', 'MNIS Core Infrastructure', 'البنية التحتية الوطنية'],
+    ['doctor@mnis.gov.eg', 'DOCTOR', 'Dr. Tarek Mahmoud', 'د. طارق محمود', 'EGY-DOC-184920', 'Cardiology & Internal Medicine', 'أمراض القلب والباطنة', 'Cairo University Hospitals', 'مستشفيات جامعة القاهرة'],
+    ['doctor2@mnis.gov.eg', 'DOCTOR', 'Dr. Nadia El-Sayed', 'د. نادية السيد', 'EGY-DOC-209311', 'Endocrinology & Diabetes', 'الغدد الصماء والسكري', 'Ain Shams Specialized Hospital', 'مستشفى عين شمس التخصصي'],
+    ['pharmacist@mnis.gov.eg', 'PHARMACIST', 'Ph. Mona Ibrahim', 'ص. منى إبراهيم', 'PH-2291', 'Clinical Pharmacy', 'الصيدلة الإكلينيكية', 'MNIS Central Pharmacy', 'الصيدلية المركزية الموحدة'],
+    ['lab1@mnis.gov.eg', 'LAB_TECH', 'Lab Tech One', 'أخصائي معمل أول', 'LB-4471', 'Hematology & Chemistry', 'أمراض الدم والكيمياء الحيوية', 'National Reference Lab', 'المعمل المرجعي القومي'],
+    ['lab2@mnis.gov.eg', 'LAB_TECH', 'Dr. Amany Fahmy', 'د. أماني فهمي', 'LB-4472', 'Diagnostic Immunology', 'المناعة التشخيصية', 'National Reference Lab', 'المعمل المرجعي القومي'],
+    ['er@mnis.gov.eg', 'HOSPITAL_STAFF', 'Nurse Hala Zaki', 'م. هالة ذكي', 'NR-1187', 'Emergency & Trauma Triage', 'فرز الطوارئ والحالات الحرجة', 'Kasr Al-Ainy Emergency Center', 'طوارئ قصر العيني'],
+    ['exec@mnis.gov.eg', 'EXECUTIVE', 'Eng. Sami Farouk', 'م. سامي فاروق', null, 'National Health Command', 'غرفة القيادة الوطنية', 'Ministry of Health & Population', 'وزارة الصحة والسكان'],
+    ['reception@mnis.gov.eg', 'RECEPTIONIST', 'Reception Desk', 'مكتب الاستقبال الموحد', null, 'Patient Registration', 'تسجيل المواطنين والبطاقات', 'Outpatient Complex', 'مجمع العيادات الخارجية'],
+    ['admin@mnis.gov.eg', 'ADMIN', 'System Admin', 'مدير النظام السيادي', null, 'System Governance', 'حوكمة وأمن المعلومات', 'MNIS Core Infrastructure', 'البنية التحتية الوطنية'],
   ];
 
   const userMap = {};
@@ -43,12 +47,12 @@ async function main() {
     userMap[email] = u;
   }
 
-  const doctor = userMap['doctor@mnis.demo'];
-  const doctor2 = userMap['doctor2@mnis.demo'];
-  const pharmacist = userMap['pharmacist@mnis.demo'];
-  const labTech = userMap['lab1@mnis.demo'];
-  const reception = userMap['reception@mnis.demo'];
-  const admin = userMap['admin@mnis.demo'];
+  const doctor = userMap['doctor@mnis.gov.eg'];
+  const doctor2 = userMap['doctor2@mnis.gov.eg'];
+  const pharmacist = userMap['pharmacist@mnis.gov.eg'];
+  const labTech = userMap['lab1@mnis.gov.eg'];
+  const reception = userMap['reception@mnis.gov.eg'];
+  const admin = userMap['admin@mnis.gov.eg'];
 
   // 2. Seed Citizens (Patients) across Egyptian Governorates with Allergies & Chronic Conditions
   const ptsData = [
@@ -272,7 +276,7 @@ async function main() {
   // 3. Seed NFC Emergency Cards for Patients
   for (let i = 0; i < patients.length; i++) {
     const p = patients[i];
-    const tokenRaw = `NFC-EG-DEMO-00${i + 1}`;
+    const tokenRaw = `NFC-EG-GOV-00${i + 1}`;
     const tHash = sha256(tokenRaw);
     await prisma.nfcCard.upsert({
       where: { tokenHash: tHash },
@@ -496,7 +500,7 @@ async function main() {
           status: r.status,
           isChronic: r.isChronic,
           signedAt: r.status !== 'DRAFT' ? now : null,
-          signatureHash: r.status !== 'DRAFT' ? sha256(r.code) : null,
+          signatureHash: null,
           verifiedById: r.status === 'VERIFIED' || r.status === 'DISPENSED' ? pharmacist.id : null,
           verifiedAt: r.status === 'VERIFIED' || r.status === 'DISPENSED' ? now : null,
           dispensedById: r.status === 'DISPENSED' ? pharmacist.id : null,
@@ -517,6 +521,23 @@ async function main() {
         },
         include: { items: true },
       });
+    }
+    if (r.status !== 'DRAFT') {
+      const canonical = JSON.stringify({
+        id: rx.id,
+        patientId: rx.patientId,
+        physicianId: rx.physicianId,
+        dx: rx.diagnosisEn,
+        items: rx.items.map((it) => [it.nameEn, it.dose, it.quantity, it.durationDays]),
+      });
+      const sig = hmacSign(canonical);
+      if (rx.signatureHash !== sig) {
+        rx = await prisma.prescription.update({
+          where: { id: rx.id },
+          data: { signatureHash: sig },
+          include: { items: true },
+        });
+      }
     }
     createdRxs.push(rx);
 

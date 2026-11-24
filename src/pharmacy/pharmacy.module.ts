@@ -406,7 +406,7 @@ export class PharmacyController {
   }
 
   @Get('claims')
-  @Roles(Role.PHARMACIST, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.PHARMACIST)
   listClaims(
     @Query('status') status?: ClaimStatus,
     @Query('month') month?: string,
@@ -420,52 +420,52 @@ export class PharmacyController {
   }
 
   @Patch('claims/:id/submit')
-  @Roles(Role.PHARMACIST, Role.ADMIN)
+  @Roles(Role.PHARMACIST)
   submitClaim(@Param('id', ParseUUIDPipe) id: string) {
     return this.svc.submitClaim(id);
   }
 
   // Settlements
   @Get('settlements')
-  @Roles(Role.PHARMACIST, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.PHARMACIST)
   listSettlements() {
     return this.svc.listSettlements();
   }
 
   @Post('settlements/run')
-  @Roles(Role.PHARMACIST, Role.ADMIN)
+  @Roles(Role.PHARMACIST)
   runSettlement(@Body() dto: RunSettlementDto, @CurrentUser() user: AuthUser) {
     return this.svc.runSettlement(dto, user.id);
   }
 
   // Allowances
   @Get('allowances/patient/:patientId')
-  @Roles(Role.PHARMACIST, Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.PHARMACIST, Role.DOCTOR)
   getAllowances(@Param('patientId', ParseUUIDPipe) patientId: string) {
     return this.svc.getAllowances(patientId);
   }
 
   @Post('allowances/dispense')
-  @Roles(Role.PHARMACIST, Role.ADMIN)
+  @Roles(Role.PHARMACIST)
   dispenseAllowance(@Body() dto: DispenseAllowanceDto) {
     return this.svc.dispenseAllowance(dto);
   }
 
   // Inventory
   @Get('inventory')
-  @Roles(Role.PHARMACIST, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.PHARMACIST)
   getInventory() {
     return this.svc.getInventory();
   }
 
   @Post('inventory')
-  @Roles(Role.PHARMACIST, Role.ADMIN)
+  @Roles(Role.PHARMACIST)
   createDrug(@Body() dto: CreateDrugDto) {
     return this.svc.createDrug(dto);
   }
 
   @Patch('inventory/:id')
-  @Roles(Role.PHARMACIST, Role.ADMIN)
+  @Roles(Role.PHARMACIST)
   updateDrug(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateDrugDto) {
     return this.svc.updateDrug(id, dto);
   }

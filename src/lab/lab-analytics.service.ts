@@ -74,7 +74,7 @@ export class LabAnalyticsService {
 @ApiTags('lab-analytics')
 @ApiBearerAuth()
 @Audit('LAB_ANALYTICS')
-@Roles(Role.LAB_TECH, Role.EXECUTIVE, Role.ADMIN)
+@Roles(Role.LAB_TECH)
 @Controller('lab/analytics')
 export class LabAnalyticsController {
   constructor(private svc: LabAnalyticsService) {}

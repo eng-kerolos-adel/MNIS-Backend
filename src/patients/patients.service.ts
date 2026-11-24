@@ -21,6 +21,7 @@ export class CreatePatientDto {
   @IsOptional() @IsBoolean() insuranceActive?: boolean;
   @IsOptional() @IsString() governorate?: string;
   @IsOptional() @IsString() district?: string;
+  @IsOptional() @IsString() @MaxLength(2000000) photoUrl?: string;
   @IsOptional() chronicConditions?: any[];
   @IsOptional() allergies?: any[];
 }
@@ -91,15 +92,17 @@ export class PatientsService {
   }
 
   async create(dto: CreatePatientDto) {
-    const { nationalId, birthDate, phone, addressAr, addressEn, ...rest } = dto;
+    const { nationalId, birthDate, phone, addressAr, addressEn, photoUrl, ...rest } = dto;
     const cleanAddressAr = addressAr?.trim() || addressEn?.trim() || undefined;
     const cleanAddressEn = addressEn?.trim() || addressAr?.trim() || undefined;
+    const cleanPhotoUrl = photoUrl?.trim() || null;
     const normalizedPhone = normalizePhoneE164(phone);
     await assertPhoneAvailable(this.prisma, normalizedPhone);
     try {
       return await this.prisma.patient.create({
         data: {
           ...rest,
+          ...(cleanPhotoUrl ? { photoUrl: cleanPhotoUrl } : {}),
           addressAr: cleanAddressAr,
           addressEn: cleanAddressEn,
           phone: normalizedPhone,

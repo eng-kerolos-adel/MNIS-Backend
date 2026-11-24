@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import * as argon2 from 'argon2';
@@ -23,8 +23,12 @@ export class CreateStaffDto {
 export class ActiveDto { @IsBoolean() isActive: boolean; }
 
 export class CreateFacilityBundleDto {
-  @IsIn(['CLINIC', 'LAB', 'HOSPITAL'])
-  facilityType: 'CLINIC' | 'LAB' | 'HOSPITAL';
+  @IsIn(['CLINIC', 'LAB', 'HOSPITAL', 'PHARMACY'])
+  facilityType: 'CLINIC' | 'LAB' | 'HOSPITAL' | 'PHARMACY';
+
+  @IsOptional()
+  @IsIn(['ANALYSIS', 'RADIOLOGY'])
+  labSubType?: 'ANALYSIS' | 'RADIOLOGY';
 
   @IsString() @Length(2, 160)
   facilityEn: string;
@@ -66,7 +70,7 @@ export class CreateFacilityBundleDto {
 const SELECT = {
   id: true, email: true, role: true, fullNameEn: true, fullNameAr: true, licenseNo: true,
   specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true,
-  isActive: true, mustChangePassword: true, createdAt: true,
+  isActive: true, mustChangePassword: true, failedLogins: true, lockedUntil: true, createdAt: true,
 } as const;
 
 @Injectable()
@@ -107,6 +111,54 @@ export class AdminService {
       this.prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } }),
     ]);
     return { temporaryPassword: temp };
+  }
+
+  async deleteStaff(id: string, actorId: string) {
+    if (id === actorId) {
+      throw new BadRequestException('CANNOT_DELETE_SELF');
+    }
+    const target = await this.prisma.user.findUnique({ where: { id }, select: { id: true, role: true, email: true, fullNameEn: true } });
+    if (!target || target.role === Role.PATIENT) {
+      throw new NotFoundException('STAFF_NOT_FOUND');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.pushNotification.deleteMany({ where: { userId: id } }),
+      this.prisma.doctorSchedule.deleteMany({ where: { doctorId: id } }),
+      this.prisma.refreshToken.deleteMany({ where: { userId: id } }),
+      this.prisma.pushToken.deleteMany({ where: { userId: id } }),
+
+      this.prisma.appointment.updateMany({ where: { doctorId: id }, data: { doctorId: null } }),
+      this.prisma.appointment.updateMany({ where: { decidedById: id }, data: { decidedById: null } }),
+      this.prisma.visit.updateMany({ where: { doctorId: id }, data: { doctorId: null } }),
+      this.prisma.prescription.updateMany({ where: { verifiedById: id }, data: { verifiedById: null } }),
+      this.prisma.prescription.updateMany({ where: { dispensedById: id }, data: { dispensedById: null } }),
+      this.prisma.renewalRequest.updateMany({ where: { decidedById: id }, data: { decidedById: null } }),
+      this.prisma.labSample.updateMany({ where: { enteredById: id }, data: { enteredById: null } }),
+      this.prisma.labSample.updateMany({ where: { verifiedById: id }, data: { verifiedById: null } }),
+      this.prisma.conditionFlag.updateMany({ where: { reviewedById: id }, data: { reviewedById: null } }),
+      this.prisma.referral.updateMany({ where: { decidedById: id }, data: { decidedById: null } }),
+      this.prisma.document.updateMany({ where: { reviewedById: id }, data: { reviewedById: null } }),
+      this.prisma.shareToken.updateMany({ where: { usedById: id }, data: { usedById: null } }),
+      this.prisma.nfcCard.updateMany({ where: { printedById: id }, data: { printedById: null } }),
+      this.prisma.nfcCard.updateMany({ where: { revokedById: id }, data: { revokedById: null } }),
+      this.prisma.pharmacySettlement.updateMany({ where: { submittedById: id }, data: { submittedById: null } }),
+      this.prisma.patient.updateMany({ where: { deletionRequestedById: id }, data: { deletionRequestedById: null } }),
+
+      this.prisma.referral.updateMany({ where: { senderId: id }, data: { senderId: actorId } }),
+      this.prisma.prescription.updateMany({ where: { physicianId: id }, data: { physicianId: actorId } }),
+      this.prisma.pharmacyClaim.updateMany({ where: { dispensedById: id }, data: { dispensedById: actorId } }),
+      this.prisma.labSample.updateMany({ where: { orderedById: id }, data: { orderedById: actorId } }),
+      this.prisma.conditionFlag.updateMany({ where: { flaggedById: id }, data: { flaggedById: actorId } }),
+      this.prisma.calibrationRecord.updateMany({ where: { performedById: id }, data: { performedById: actorId } }),
+      this.prisma.radiologyUpload.updateMany({ where: { uploadedById: id }, data: { uploadedById: actorId } }),
+      this.prisma.orCase.updateMany({ where: { surgeonId: id }, data: { surgeonId: actorId } }),
+      this.prisma.orCase.updateMany({ where: { createdById: id }, data: { createdById: actorId } }),
+
+      this.prisma.user.delete({ where: { id } }),
+    ]);
+
+    return { ok: true, deletedId: id, email: target.email };
   }
 
   async getAuditLogs() {
@@ -199,15 +251,22 @@ export class AdminService {
     return Array.from(groups.values()).map((g) => {
       const roles = new Set(g.staff.map((s) => s.role));
       const hasAssistant = g.staff.some((s) => s.specialityEn === 'CLINIC_ASSISTANT');
-      let facilityType: 'CLINIC' | 'LAB' | 'HOSPITAL' | 'PHARMACY' | 'COMMAND' = 'COMMAND';
+      const isRadiology = g.staff.some(
+        (s) =>
+          s.specialityEn?.toUpperCase().startsWith('RADIOLOGY') ||
+          s.licenseNo?.toUpperCase().startsWith('RAD-'),
+      );
+      let facilityType: 'CLINIC' | 'LAB' | 'RADIOLOGY' | 'HOSPITAL' | 'PHARMACY' | 'RECEPTION' | 'COMMAND' = 'COMMAND';
       if (roles.has(Role.HOSPITAL_STAFF)) {
         facilityType = 'HOSPITAL';
       } else if (roles.has(Role.LAB_TECH)) {
-        facilityType = 'LAB';
+        facilityType = isRadiology ? 'RADIOLOGY' : 'LAB';
       } else if (hasAssistant || roles.has(Role.DOCTOR)) {
         facilityType = 'CLINIC';
       } else if (roles.has(Role.PHARMACIST)) {
         facilityType = 'PHARMACY';
+      } else if (roles.has(Role.RECEPTIONIST)) {
+        facilityType = 'RECEPTION';
       }
       return {
         key: g.key,
@@ -249,7 +308,9 @@ export class AdminService {
         ? 'assistant'
         : dto.facilityType === 'LAB'
           ? 'specialist'
-          : 'doctor';
+          : dto.facilityType === 'PHARMACY'
+            ? 'dispensing'
+            : 'doctor';
     const rawSecondary = dto.secondaryEmail?.trim().toLowerCase() || '';
     const [pLocal, pDomain] = primaryEmail.split('@');
     const secondaryCandidate =
@@ -259,7 +320,11 @@ export class AdminService {
     const secondaryEmail = await this.ensureUniqueEmail(secondaryCandidate, rolePrefix, primaryEmail);
     const directorEmail =
       dto.facilityType === 'LAB'
-        ? await this.ensureUniqueEmail(`director.${pLocal || 'lab'}@${pDomain || 'mnis.eg'}`, 'director', secondaryEmail)
+        ? await this.ensureUniqueEmail(
+            `${dto.labSubType === 'RADIOLOGY' ? 'rad.director' : 'director'}.${pLocal || 'lab'}@${pDomain || 'mnis.eg'}`,
+            'director',
+            secondaryEmail,
+          )
         : null;
 
     const temp1 = generateTempPassword();
@@ -341,7 +406,11 @@ export class AdminService {
           });
         }
       } else if (dto.facilityType === 'LAB') {
-        const baseLic = dto.licenseNo?.trim() || `LAB-EG-${Math.floor(1000 + Math.random() * 9000)}`;
+        const isRadiology = dto.labSubType === 'RADIOLOGY';
+        const baseLic =
+          dto.licenseNo?.trim() ||
+          `${isRadiology ? 'RAD-EG' : 'LAB-EG'}-${Math.floor(1000 + Math.random() * 9000)}`;
+
         const labRec = await tx.user.create({
           data: {
             email: primaryEmail,
@@ -350,8 +419,8 @@ export class AdminService {
             fullNameEn: dto.primaryNameEn.trim(),
             fullNameAr: dto.primaryNameAr.trim(),
             licenseNo: baseLic,
-            specialityEn: 'LAB_RECEPTION',
-            specialityAr: 'استقبال وسحب عينات المعمل',
+            specialityEn: isRadiology ? 'RADIOLOGY_RECEPTION' : 'LAB_RECEPTION',
+            specialityAr: isRadiology ? 'استقبال وحجز مركز الأشعة' : 'استقبال وسحب عينات المعمل',
             facilityEn,
             facilityAr,
             mustChangePassword: false,
@@ -361,21 +430,32 @@ export class AdminService {
         accounts.push({
           user: labRec,
           temporaryPassword: temp1,
-          roleLabelEn: 'Lab Receptionist & Intake Officer',
-          roleLabelAr: 'موظف استقبال المعمل',
+          roleLabelEn: isRadiology ? 'Radiology Receptionist' : 'Lab Receptionist & Intake Officer',
+          roleLabelAr: isRadiology ? 'موظف استقبال مركز الأشعة' : 'موظف استقبال معمل التحاليل',
         });
 
         if (secondaryEmail && hash2 && temp2) {
+          const specEnInput = dto.specialityEn?.trim();
+          const radSpecEn =
+            specEnInput && specEnInput.toUpperCase().startsWith('RADIOLOGY')
+              ? specEnInput
+              : 'RADIOLOGY_SPECIALIST';
           const labSpec = await tx.user.create({
             data: {
               email: secondaryEmail,
               passwordHash: hash2,
               role: Role.LAB_TECH,
-              fullNameEn: dto.secondaryNameEn?.trim() || `${facilityEn} Specialist`,
-              fullNameAr: dto.secondaryNameAr?.trim() || `أخصائي تحاليل — ${facilityAr}`,
+              fullNameEn:
+                dto.secondaryNameEn?.trim() ||
+                `${facilityEn} ${isRadiology ? 'Radiology Specialist' : 'Specialist'}`,
+              fullNameAr:
+                dto.secondaryNameAr?.trim() ||
+                `${isRadiology ? 'أخصائي أشعة' : 'أخصائي تحاليل'} — ${facilityAr}`,
               licenseNo: `${baseLic}-SPEC`,
-              specialityEn: dto.specialityEn?.trim() || 'Diagnostic Lab Specialist',
-              specialityAr: dto.specialityAr?.trim() || 'أخصائي تحاليل طبية معتمد',
+              specialityEn: isRadiology ? radSpecEn : specEnInput || 'Diagnostic Lab Specialist',
+              specialityAr:
+                dto.specialityAr?.trim() ||
+                (isRadiology ? 'أخصائي أشعة تشخيصية معتمد' : 'أخصائي تحاليل طبية معتمد'),
               facilityEn,
               facilityAr,
               mustChangePassword: false,
@@ -385,8 +465,8 @@ export class AdminService {
           accounts.push({
             user: labSpec,
             temporaryPassword: temp2,
-            roleLabelEn: 'Diagnostic Lab Specialist',
-            roleLabelAr: 'أخصائي التحاليل الطبية',
+            roleLabelEn: isRadiology ? 'Diagnostic Radiology Specialist' : 'Diagnostic Lab Specialist',
+            roleLabelAr: isRadiology ? 'أخصائي الأشعة التشخيصية' : 'أخصائي التحاليل الطبية',
           });
         }
 
@@ -396,11 +476,11 @@ export class AdminService {
               email: directorEmail,
               passwordHash: hash3,
               role: Role.LAB_TECH,
-              fullNameEn: `${facilityEn} Director & Verifier`,
-              fullNameAr: `مدير ومعتمد النتائج — ${facilityAr}`,
+              fullNameEn: `${facilityEn} ${isRadiology ? 'Radiology Director' : 'Director & Verifier'}`,
+              fullNameAr: `${isRadiology ? 'مدير مركز الأشعة' : 'مدير ومعتمد النتائج'} — ${facilityAr}`,
               licenseNo: `${baseLic}-DIR`,
-              specialityEn: 'Lab Director & Senior Verifier',
-              specialityAr: 'مدير المعمل ومعتمد النتائج النهائية',
+              specialityEn: isRadiology ? 'RADIOLOGY_DIRECTOR' : 'Lab Director & Senior Verifier',
+              specialityAr: isRadiology ? 'مدير مركز الأشعة والتقارير' : 'مدير المعمل ومعتمد النتائج النهائية',
               facilityEn,
               facilityAr,
               mustChangePassword: false,
@@ -410,8 +490,61 @@ export class AdminService {
           accounts.push({
             user: labDirector,
             temporaryPassword: temp3,
-            roleLabelEn: 'Lab Director & Senior Verifier (Dual Sign-Off)',
-            roleLabelAr: 'مدير المعمل ومعتمد النتائج النهائية (التوقيع المزدوج)',
+            roleLabelEn: isRadiology
+              ? 'Radiology Center Director'
+              : 'Lab Director & Senior Verifier (Dual Sign-Off)',
+            roleLabelAr: isRadiology
+              ? 'مدير مركز الأشعة والتقارير'
+              : 'مدير المعمل ومعتمد النتائج النهائية (التوقيع المزدوج)',
+          });
+        }
+      } else if (dto.facilityType === 'PHARMACY') {
+        const baseLic = dto.licenseNo?.trim() || `PHARM-EG-${Math.floor(1000 + Math.random() * 9000)}`;
+        const chiefPharm = await tx.user.create({
+          data: {
+            email: primaryEmail,
+            passwordHash: hash1,
+            role: Role.PHARMACIST,
+            fullNameEn: dto.primaryNameEn.trim(),
+            fullNameAr: dto.primaryNameAr.trim(),
+            licenseNo: baseLic,
+            specialityEn: dto.specialityEn?.trim() || 'Chief & Clinical Pharmacist',
+            specialityAr: dto.specialityAr?.trim() || 'مدير الصيدلية والصيدلي المسؤول',
+            facilityEn,
+            facilityAr,
+            mustChangePassword: false,
+          },
+          select: SELECT,
+        });
+        accounts.push({
+          user: chiefPharm,
+          temporaryPassword: temp1,
+          roleLabelEn: 'Chief Pharmacist',
+          roleLabelAr: 'مدير الصيدلية / الصيدلي المسؤول',
+        });
+
+        if (secondaryEmail && hash2 && temp2) {
+          const dispPharm = await tx.user.create({
+            data: {
+              email: secondaryEmail,
+              passwordHash: hash2,
+              role: Role.PHARMACIST,
+              fullNameEn: dto.secondaryNameEn?.trim() || `Dispensing Pharmacist — ${facilityEn}`,
+              fullNameAr: dto.secondaryNameAr?.trim() || `صيدلي الصرف — ${facilityAr}`,
+              licenseNo: `${baseLic}-DISP`,
+              specialityEn: 'Dispensing Pharmacist',
+              specialityAr: 'صيدلي صرف الروشتات وحصص المزمن',
+              facilityEn,
+              facilityAr,
+              mustChangePassword: false,
+            },
+            select: SELECT,
+          });
+          accounts.push({
+            user: dispPharm,
+            temporaryPassword: temp2,
+            roleLabelEn: 'Dispensing Pharmacist',
+            roleLabelAr: 'صيدلي الصرف',
           });
         }
       } else {
@@ -506,7 +639,7 @@ export class AdminService {
 }
 
 @ApiTags('admin') @ApiBearerAuth() @Audit('USER')
-@Roles(Role.ADMIN, Role.EXECUTIVE)
+@Roles(Role.ADMIN)
 @Controller('admin/users')
 export class AdminController {
   constructor(private svc: AdminService) {}
@@ -522,6 +655,7 @@ export class AdminController {
   @Post() @Roles(Role.ADMIN) create(@Body() dto: CreateStaffDto) { return this.svc.create(dto); }
   @Patch(':id/active') @Roles(Role.ADMIN) setActive(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ActiveDto, @CurrentUser() u: AuthUser) { return this.svc.setActive(id, dto.isActive, u.id); }
   @Post(':id/reset-password') @Roles(Role.ADMIN) reset(@Param('id', ParseUUIDPipe) id: string) { return this.svc.resetPassword(id); }
+  @Delete(':id') @Roles(Role.ADMIN) deleteStaff(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.deleteStaff(id, u.id); }
 }
 
 @Module({ controllers: [AdminController], providers: [AdminService] })

@@ -219,15 +219,15 @@ export class QueueService {
 @Controller('queue')
 export class QueueController {
   constructor(private svc: QueueService) {}
-  @Get() @Roles(Role.DOCTOR, Role.HOSPITAL_STAFF, Role.RECEPTIONIST, Role.ADMIN, Role.EXECUTIVE)
+  @Get() @Roles(Role.DOCTOR, Role.HOSPITAL_STAFF, Role.RECEPTIONIST)
   list(@CurrentUser() u: AuthUser) { return this.svc.list(u); }
-  @Post() @Roles(Role.DOCTOR, Role.HOSPITAL_STAFF, Role.RECEPTIONIST, Role.ADMIN)
+  @Post() @Roles(Role.DOCTOR, Role.HOSPITAL_STAFF, Role.RECEPTIONIST)
   create(@Body() dto: CreateTicketDto, @CurrentUser() u: AuthUser) { return this.svc.create(dto, u); }
-  @Post('call-next') @Roles(Role.DOCTOR, Role.RECEPTIONIST, Role.HOSPITAL_STAFF, Role.ADMIN)
+  @Post('call-next') @Roles(Role.DOCTOR, Role.RECEPTIONIST, Role.HOSPITAL_STAFF)
   callNext(@CurrentUser() u: AuthUser, @Body() body?: { doctorId?: string }) {
     return this.svc.callNext(u, body?.doctorId);
   }
-  @Patch(':id/status') @Roles(Role.DOCTOR, Role.HOSPITAL_STAFF, Role.RECEPTIONIST, Role.ADMIN)
+  @Patch(':id/status') @Roles(Role.DOCTOR, Role.HOSPITAL_STAFF, Role.RECEPTIONIST)
   setStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateVisitStatusDto, @CurrentUser() u: AuthUser) {
     return this.svc.setStatus(id, dto, u);
   }

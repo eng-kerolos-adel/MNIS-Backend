@@ -526,7 +526,7 @@ export class ReferralsController {
   constructor(private readonly referralsService: ReferralsService) {}
 
   @Post()
-  @Roles(Role.DOCTOR, Role.ADMIN)
+  @Roles(Role.DOCTOR)
   @ApiOperation({
     summary: 'Create a referral',
     description:
@@ -541,7 +541,7 @@ export class ReferralsController {
   }
 
   @Get()
-  @Roles(Role.DOCTOR, Role.HOSPITAL_STAFF, Role.LAB_TECH, Role.PHARMACIST, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.DOCTOR, Role.HOSPITAL_STAFF, Role.LAB_TECH, Role.PHARMACIST)
   @ApiOperation({
     summary: 'List referrals',
   })
@@ -550,7 +550,7 @@ export class ReferralsController {
   }
 
   @Patch(':id/status')
-  @Roles(Role.HOSPITAL_STAFF, Role.LAB_TECH, Role.PHARMACIST, Role.DOCTOR, Role.ADMIN)
+  @Roles(Role.HOSPITAL_STAFF, Role.LAB_TECH, Role.PHARMACIST, Role.DOCTOR)
   @ApiOperation({
     summary: 'Act on a referral',
   })
@@ -564,7 +564,7 @@ export class ReferralsController {
   }
 
   @Delete(':id')
-  @Roles(Role.DOCTOR, Role.ADMIN)
+  @Roles(Role.DOCTOR)
   @ApiOperation({
     summary: 'Cancel a referral',
   })

@@ -428,7 +428,7 @@ export class AnalyticsService {
 @ApiTags('analytics')
 @ApiBearerAuth()
 @Audit('ANALYTICS')
-@Roles(Role.EXECUTIVE, Role.ADMIN)
+@Roles(Role.EXECUTIVE)
 @Controller('analytics')
 export class AnalyticsController {
   constructor(private svc: AnalyticsService) {}
@@ -452,11 +452,11 @@ export class AnalyticsController {
   getFacilityCapacity() { return this.svc.getFacilityCapacity(); }
 
   @Get('quad-ministries')
-  @Roles(Role.EXECUTIVE, Role.ADMIN, Role.DOCTOR, Role.RECEPTIONIST)
+  @Roles(Role.EXECUTIVE)
   getQuadMinistries() { return this.svc.getQuadMinistries(); }
 
   @Get('kpis')
-  @Roles(Role.DOCTOR, Role.PHARMACIST, Role.LAB_TECH, Role.HOSPITAL_STAFF, Role.EXECUTIVE, Role.ADMIN, Role.RECEPTIONIST)
+  @Roles(Role.EXECUTIVE)
   getKpis() { return this.svc.getKpis(); }
 }
 

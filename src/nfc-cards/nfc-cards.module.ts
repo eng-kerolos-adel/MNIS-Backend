@@ -259,19 +259,19 @@ export class NfcCardsController {
   constructor(private svc: NfcCardsService) {}
 
   @Post('print')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.DOCTOR)
+  @Roles(Role.RECEPTIONIST, Role.DOCTOR)
   printCard(@Body() dto: PrintCardDto, @CurrentUser() user: AuthUser) {
     return this.svc.print(dto.patientId, user.id);
   }
 
   @Patch(':id/revoke')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.DOCTOR)
+  @Roles(Role.RECEPTIONIST, Role.DOCTOR)
   revokeCard(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RevokeCardDto, @CurrentUser() user: AuthUser) {
     return this.svc.revoke(id, dto.revokeReason, user.id);
   }
 
   @Post('replace')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.DOCTOR)
+  @Roles(Role.RECEPTIONIST, Role.DOCTOR)
   replaceCard(@Body() dto: PrintCardDto, @CurrentUser() user: AuthUser) {
     return this.svc.requestReplacement(dto.patientId, user.id);
   }
@@ -284,7 +284,7 @@ export class NfcCardsController {
   }
 
   @Get('patient/:patientId')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.DOCTOR, Role.EXECUTIVE)
+  @Roles(Role.RECEPTIONIST, Role.DOCTOR)
   listCards(@Param('patientId', ParseUUIDPipe) patientId: string) {
     return this.svc.listCards(patientId);
   }

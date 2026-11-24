@@ -100,11 +100,7 @@ export class PrescriptionsService {
       !!rx.signatureHash &&
       rx.signatureHash.length === expected.length &&
       timingSafeEqual(Buffer.from(rx.signatureHash, 'utf8'), Buffer.from(expected, 'utf8'));
-    const matchesLegacySeed =
-      rx.code.startsWith('RX-EG-') &&
-      !!rx.signatureHash &&
-      rx.signatureHash === this.crypto.sha256(rx.code);
-    if (!matchesHmac && !matchesLegacySeed) {
+    if (!matchesHmac) {
       throw new BadRequestException('RX_SIGNATURE_TAMPERED');
     }
   }
@@ -329,12 +325,12 @@ export class PrescriptionsService {
 @Controller('prescriptions')
 export class PrescriptionsController {
   constructor(private svc: PrescriptionsService) {}
-  @Post() @Roles(Role.DOCTOR, Role.ADMIN) create(@CurrentUser() u: AuthUser, @Body() dto: CreateRxDto) { return this.svc.create(u.id, dto); }
-  @Get() @Roles(Role.DOCTOR, Role.PHARMACIST, Role.ADMIN, Role.EXECUTIVE) list(@CurrentUser() u: AuthUser, @Query() q: RxQueryDto) { return this.svc.list(u, q.status, q.patientId); }
-  @Post(':id/sign') @Roles(Role.DOCTOR, Role.ADMIN) sign(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.sign(id, u); }
-  @Post(':id/verify') @Roles(Role.PHARMACIST, Role.ADMIN) verify(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.verify(id, u); }
-  @Post(':id/dispense') @Roles(Role.PHARMACIST, Role.ADMIN) dispense(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.dispense(id, u); }
-  @Post(':id/reject') @Roles(Role.PHARMACIST, Role.ADMIN) reject(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectDto, @CurrentUser() u: AuthUser) { return this.svc.reject(id, dto.reason, u); }
+  @Post() @Roles(Role.DOCTOR) create(@CurrentUser() u: AuthUser, @Body() dto: CreateRxDto) { return this.svc.create(u.id, dto); }
+  @Get() @Roles(Role.DOCTOR, Role.PHARMACIST) list(@CurrentUser() u: AuthUser, @Query() q: RxQueryDto) { return this.svc.list(u, q.status, q.patientId); }
+  @Post(':id/sign') @Roles(Role.DOCTOR) sign(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.sign(id, u); }
+  @Post(':id/verify') @Roles(Role.PHARMACIST) verify(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.verify(id, u); }
+  @Post(':id/dispense') @Roles(Role.PHARMACIST) dispense(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.dispense(id, u); }
+  @Post(':id/reject') @Roles(Role.PHARMACIST) reject(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectDto, @CurrentUser() u: AuthUser) { return this.svc.reject(id, dto.reason, u); }
 }
 
 @Module({ imports: [NotificationsModule], controllers: [PrescriptionsController], providers: [PrescriptionsService] })

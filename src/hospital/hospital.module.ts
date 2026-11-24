@@ -198,16 +198,16 @@ export class HospitalService {
 }
 
 @ApiTags('hospital') @ApiBearerAuth() @Audit('HOSPITAL')
-@Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE)
+@Roles(Role.HOSPITAL_STAFF, Role.DOCTOR)
 @Controller('hospital')
 export class HospitalController {
   constructor(private svc: HospitalService) {}
   @Get('beds') beds(@CurrentUser() u: AuthUser) { return this.svc.beds(u); }
-  @Patch('beds/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) setBed(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BedStatusDto, @CurrentUser() u: AuthUser) { return this.svc.setBedStatus(id, dto.status, u); }
+  @Patch('beds/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR) setBed(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BedStatusDto, @CurrentUser() u: AuthUser) { return this.svc.setBedStatus(id, dto.status, u); }
   @Get('er') er(@CurrentUser() u: AuthUser) { return this.svc.er(u); }
-  @Post('er') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) intake(@Body() dto: ErIntakeDto, @CurrentUser() u: AuthUser) { return this.svc.intake(dto, u); }
-  @Patch('er/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) setEr(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ErStatusDto, @CurrentUser() u: AuthUser) { return this.svc.setErStatus(id, dto.status, u); }
-  @Post('er/:id/admit') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN) admit(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdmitDto, @CurrentUser() u: AuthUser) { return this.svc.admit(id, dto.bedId, u); }
+  @Post('er') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR) intake(@Body() dto: ErIntakeDto, @CurrentUser() u: AuthUser) { return this.svc.intake(dto, u); }
+  @Patch('er/:id/status') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR) setEr(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ErStatusDto, @CurrentUser() u: AuthUser) { return this.svc.setErStatus(id, dto.status, u); }
+  @Post('er/:id/admit') @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR) admit(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdmitDto, @CurrentUser() u: AuthUser) { return this.svc.admit(id, dto.bedId, u); }
 }
 
 import { BloodBankController, BloodBankService } from './blood-bank.service';

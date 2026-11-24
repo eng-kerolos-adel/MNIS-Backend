@@ -1,46 +1,43 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import * as argon2 from 'argon2';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  const adminEmail = 'admin@mnis.gov.eg';
-  const passwordHash = await argon2.hash('12345678');
+  const rawPassword = process.env.SEED_PASSWORD;
+  if (!rawPassword || rawPassword.length < 12) {
+    throw new Error('Set SEED_PASSWORD env var (12+ chars) before running quick-seed.');
+  }
+  const passwordHash = await argon2.hash(rawPassword);
 
-  // Create an Admin
+  const adminEmail = 'admin@mnis.gov.eg';
   const admin = await prisma.user.upsert({
     where: { email: adminEmail },
     update: {},
     create: {
       email: adminEmail,
-      passwordHash: passwordHash,
+      passwordHash,
       role: 'ADMIN',
       fullNameEn: 'System Admin',
       fullNameAr: 'مدير النظام',
     },
   });
 
-  console.log('✅ Admin user created:');
-  console.log('Email:', admin.email);
-  console.log('Password: 12345678');
-
-  // Create a Receptionist (to test adding citizens)
   const receptionEmail = 'reception@mnis.gov.eg';
   const receptionist = await prisma.user.upsert({
     where: { email: receptionEmail },
     update: {},
     create: {
       email: receptionEmail,
-      passwordHash: passwordHash,
+      passwordHash,
       role: 'RECEPTIONIST',
       fullNameEn: 'Main Receptionist',
       fullNameAr: 'موظف الاستقبال',
     },
   });
 
-  console.log('\n✅ Receptionist user created:');
-  console.log('Email:', receptionist.email);
-  console.log('Password: 12345678');
+  console.log('Seeded institutional accounts:', admin.email, receptionist.email);
 }
 
 main()

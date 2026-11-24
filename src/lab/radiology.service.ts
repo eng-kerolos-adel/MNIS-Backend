@@ -139,7 +139,7 @@ export class RadiologyService {
 @ApiTags('lab-radiology')
 @ApiBearerAuth()
 @Audit('LAB_RADIOLOGY')
-@Roles(Role.LAB_TECH, Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE)
+@Roles(Role.LAB_TECH, Role.DOCTOR)
 @Controller('lab/radiology')
 export class RadiologyController {
   constructor(private svc: RadiologyService) {}
@@ -151,7 +151,7 @@ export class RadiologyController {
   }
 
   @Post()
-  @Roles(Role.LAB_TECH, Role.DOCTOR, Role.ADMIN)
+  @Roles(Role.LAB_TECH)
   upload(@Body() dto: UploadRadiologyDto, @CurrentUser() user: AuthUser) {
     return this.svc.upload(dto, user.id);
   }
@@ -162,7 +162,7 @@ export class RadiologyController {
   }
 
   @Delete(':id')
-  @Roles(Role.LAB_TECH, Role.ADMIN)
+  @Roles(Role.LAB_TECH)
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.svc.delete(id);
   }

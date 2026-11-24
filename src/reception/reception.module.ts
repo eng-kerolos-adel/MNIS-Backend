@@ -54,6 +54,12 @@ export class UpdateCitizenAddressDto {
   addressEn?: string;
 }
 
+export class UpdateCitizenPhotoDto {
+  @IsString()
+  @Length(10, 2000000)
+  photoUrl: string;
+}
+
 export class RequestCitizenDeletionDto {
   @IsString()
   @Length(3, 300)
@@ -101,7 +107,8 @@ export class ReceptionService {
       if (phoneChanged) {
         await assertPhoneAvailable(this.prisma, normalizedPhone, existing.id);
       }
-      if (phoneChanged || addressAr || dto.governorate || dto.district) {
+      const cleanPhotoUrl = dto.photoUrl?.trim() || undefined;
+      if (phoneChanged || addressAr || dto.governorate || dto.district || cleanPhotoUrl) {
         try {
           patient = await this.prisma.patient.update({
             where: { id: existing.id },
@@ -110,6 +117,7 @@ export class ReceptionService {
               ...(dto.governorate ? { governorate: dto.governorate } : {}),
               ...(dto.district ? { district: dto.district } : {}),
               ...(addressAr ? { addressAr, addressEn } : {}),
+              ...(cleanPhotoUrl ? { photoUrl: cleanPhotoUrl } : {}),
             },
           });
         } catch (err) {
@@ -274,6 +282,21 @@ export class ReceptionService {
     });
   }
 
+  async updateCitizenPhoto(patientId: string, photoUrl: string) {
+    const clean = photoUrl?.trim();
+    if (!clean || (!clean.startsWith('data:image/') && !clean.startsWith('http'))) {
+      throw new BadRequestException('INVALID_PHOTO_FORMAT');
+    }
+    const patient = await this.prisma.patient.findUnique({ where: { id: patientId }, select: { id: true } });
+    if (!patient) throw new NotFoundException('PATIENT_NOT_FOUND');
+
+    return this.prisma.patient.update({
+      where: { id: patientId },
+      data: { photoUrl: clean },
+      select: PATIENT_PUBLIC_SELECT,
+    });
+  }
+
   listPendingDeletionRequests() {
     return this.prisma.patient.findMany({
       where: { deletionRequestedAt: { not: null } },
@@ -375,31 +398,31 @@ export class ReceptionService {
 @ApiTags('reception')
 @ApiBearerAuth()
 @Audit('CITIZEN_ACCOUNT')
-@Roles(Role.RECEPTIONIST, Role.ADMIN, Role.EXECUTIVE)
+@Roles(Role.RECEPTIONIST)
 @Controller('reception/citizens')
 export class ReceptionController {
   constructor(private svc: ReceptionService) {}
 
   @Get('deletion-requests')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.RECEPTIONIST, Role.EXECUTIVE)
   listDeletionRequests() {
     return this.svc.listPendingDeletionRequests();
   }
 
   @Post()
-  @Roles(Role.RECEPTIONIST, Role.ADMIN)
+  @Roles(Role.RECEPTIONIST)
   open(@Body() dto: CreatePatientDto, @CurrentUser() u: AuthUser) {
     return this.svc.openAccount(dto, u?.id);
   }
 
   @Post(':patientId/reset-password')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN)
+  @Roles(Role.RECEPTIONIST)
   reset(@Param('patientId', ParseUUIDPipe) id: string) {
     return this.svc.resetCitizenPassword(id);
   }
 
   @Patch(':patientId/phone')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN)
+  @Roles(Role.RECEPTIONIST)
   updatePhone(
     @Param('patientId', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCitizenPhoneDto,
@@ -408,7 +431,7 @@ export class ReceptionController {
   }
 
   @Patch(':patientId/address')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN)
+  @Roles(Role.RECEPTIONIST)
   updateAddress(
     @Param('patientId', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCitizenAddressDto,
@@ -416,8 +439,17 @@ export class ReceptionController {
     return this.svc.updateCitizenAddress(id, dto);
   }
 
+  @Patch(':patientId/photo')
+  @Roles(Role.RECEPTIONIST)
+  updatePhoto(
+    @Param('patientId', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateCitizenPhotoDto,
+  ) {
+    return this.svc.updateCitizenPhoto(id, dto.photoUrl);
+  }
+
   @Post(':patientId/deletion-request')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.RECEPTIONIST)
   requestDeletion(
     @Param('patientId', ParseUUIDPipe) id: string,
     @Body() dto: RequestCitizenDeletionDto,
@@ -427,19 +459,19 @@ export class ReceptionController {
   }
 
   @Post(':patientId/deletion-reject')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN, Role.EXECUTIVE)
+  @Roles(Role.RECEPTIONIST, Role.EXECUTIVE)
   rejectDeletion(@Param('patientId', ParseUUIDPipe) id: string) {
     return this.svc.rejectCitizenDeletion(id);
   }
 
   @Post(':patientId/deletion-approve')
-  @Roles(Role.EXECUTIVE, Role.ADMIN)
+  @Roles(Role.EXECUTIVE)
   approveDeletion(@Param('patientId', ParseUUIDPipe) id: string) {
     return this.svc.approveCitizenDeletion(id);
   }
 
   @Post(':patientId/notify')
-  @Roles(Role.RECEPTIONIST, Role.ADMIN)
+  @Roles(Role.RECEPTIONIST)
   notifyCitizen(
     @Param('patientId', ParseUUIDPipe) id: string,
     @Body() dto: SendCitizenPushDto,

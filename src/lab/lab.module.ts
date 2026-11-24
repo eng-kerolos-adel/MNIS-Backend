@@ -372,14 +372,14 @@ export class LabService {
 @Controller('lab/samples')
 export class LabController {
   constructor(private svc: LabService) {}
-  @Get() @Roles(Role.LAB_TECH, Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE) list(@CurrentUser() u: AuthUser, @Query('patientId') patientId?: string) { return this.svc.list(u, patientId); }
-  @Get('condition-flags') @Roles(Role.DOCTOR, Role.LAB_TECH, Role.HOSPITAL_STAFF, Role.ADMIN, Role.EXECUTIVE) listFlags(@Query('patientId') patientId?: string) { return this.svc.listConditionFlags(patientId); }
-  @Post('condition-flags') @Roles(Role.LAB_TECH, Role.DOCTOR, Role.ADMIN) createFlag(@CurrentUser() u: AuthUser, @Body() dto: CreateConditionFlagDto) { return this.svc.createConditionFlag(dto, u.id); }
-  @Patch('condition-flags/:id/review') @Roles(Role.DOCTOR, Role.ADMIN) reviewFlag(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReviewConditionFlagDto, @CurrentUser() u: AuthUser) { return this.svc.reviewConditionFlag(id, dto, u.id); }
-  @Post() @Roles(Role.DOCTOR, Role.LAB_TECH, Role.ADMIN) order(@CurrentUser() u: AuthUser, @Body() dto: OrderSampleDto) { return this.svc.order(u.id, dto); }
-  @Patch(':id/status') @Roles(Role.LAB_TECH, Role.ADMIN) setStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SampleStatusDto) { return this.svc.setStatus(id, dto); }
-  @Post(':id/results') @Roles(Role.LAB_TECH, Role.ADMIN) enter(@Param('id', ParseUUIDPipe) id: string, @Body() dto: EnterResultsDto, @CurrentUser() u: AuthUser) { return this.svc.enterResults(id, dto, u); }
-  @Post(':id/verify') @Roles(Role.LAB_TECH, Role.DOCTOR, Role.ADMIN) verify(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.verify(id, u); }
+  @Get() @Roles(Role.LAB_TECH, Role.DOCTOR) list(@CurrentUser() u: AuthUser, @Query('patientId') patientId?: string) { return this.svc.list(u, patientId); }
+  @Get('condition-flags') @Roles(Role.DOCTOR, Role.LAB_TECH, Role.HOSPITAL_STAFF) listFlags(@Query('patientId') patientId?: string) { return this.svc.listConditionFlags(patientId); }
+  @Post('condition-flags') @Roles(Role.LAB_TECH, Role.DOCTOR) createFlag(@CurrentUser() u: AuthUser, @Body() dto: CreateConditionFlagDto) { return this.svc.createConditionFlag(dto, u.id); }
+  @Patch('condition-flags/:id/review') @Roles(Role.DOCTOR) reviewFlag(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReviewConditionFlagDto, @CurrentUser() u: AuthUser) { return this.svc.reviewConditionFlag(id, dto, u.id); }
+  @Post() @Roles(Role.DOCTOR, Role.LAB_TECH) order(@CurrentUser() u: AuthUser, @Body() dto: OrderSampleDto) { return this.svc.order(u.id, dto); }
+  @Patch(':id/status') @Roles(Role.LAB_TECH) setStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SampleStatusDto) { return this.svc.setStatus(id, dto); }
+  @Post(':id/results') @Roles(Role.LAB_TECH) enter(@Param('id', ParseUUIDPipe) id: string, @Body() dto: EnterResultsDto, @CurrentUser() u: AuthUser) { return this.svc.enterResults(id, dto, u); }
+  @Post(':id/verify') @Roles(Role.LAB_TECH, Role.DOCTOR) verify(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.verify(id, u); }
 }
 
 import { QcController, QcService } from './qc.service';

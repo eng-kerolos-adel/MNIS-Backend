@@ -175,7 +175,7 @@ export class BloodBankService {
 @ApiTags('hospital-blood-bank')
 @ApiBearerAuth()
 @Audit('BLOOD_BANK')
-@Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE)
+@Roles(Role.HOSPITAL_STAFF, Role.DOCTOR)
 @Controller('hospital/blood-bank')
 export class BloodBankController {
   constructor(private svc: BloodBankService) {}
@@ -191,13 +191,13 @@ export class BloodBankController {
   }
 
   @Post()
-  @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN)
+  @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR)
   create(@Body() dto: CreateBloodUnitDto) {
     return this.svc.create(dto);
   }
 
   @Patch(':id')
-  @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR, Role.ADMIN)
+  @Roles(Role.HOSPITAL_STAFF, Role.DOCTOR)
   updateStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateBloodUnitDto) {
     return this.svc.updateStatus(id, dto);
   }

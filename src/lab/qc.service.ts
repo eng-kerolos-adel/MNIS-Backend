@@ -155,7 +155,7 @@ export class QcService {
 @ApiTags('lab-qc')
 @ApiBearerAuth()
 @Audit('LAB_QC')
-@Roles(Role.LAB_TECH, Role.ADMIN)
+@Roles(Role.LAB_TECH)
 @Controller('lab/instruments')
 export class QcController {
   constructor(private svc: QcService) {}

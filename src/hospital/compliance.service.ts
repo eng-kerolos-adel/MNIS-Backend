@@ -71,7 +71,7 @@ export class HospitalComplianceService {
 @ApiTags('hospital-compliance')
 @ApiBearerAuth()
 @Audit('HOSPITAL_COMPLIANCE')
-@Roles(Role.HOSPITAL_STAFF, Role.EXECUTIVE, Role.ADMIN)
+@Roles(Role.HOSPITAL_STAFF)
 @Controller('hospital/compliance')
 export class HospitalComplianceController {
   constructor(private svc: HospitalComplianceService) {}

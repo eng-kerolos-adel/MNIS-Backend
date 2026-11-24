@@ -109,7 +109,7 @@ export class AppointmentsService {
     const docs = docIds.length
       ? await this.prisma.user.findMany({
           where: { id: { in: docIds } },
-          select: { id: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true },
+          select: { id: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true, licenseNo: true },
         })
       : [];
     const docMap = new Map(docs.map((d) => [d.id, d]));
@@ -126,7 +126,7 @@ export class AppointmentsService {
     const targetProviderId = dto.doctorId || existing.doctorId || scope.doctorId || u.id;
     const provider = await this.prisma.user.findUnique({
       where: { id: targetProviderId },
-      select: { id: true, role: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true },
+      select: { id: true, role: true, fullNameEn: true, fullNameAr: true, specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true, licenseNo: true },
     });
     if (!provider) throw new BadRequestException('DOCTOR_NOT_FOUND');
     if (existing.type === 'CLINIC' && provider.role !== Role.DOCTOR) {
@@ -159,35 +159,53 @@ export class AppointmentsService {
         }
       } else {
         const panel = appt.testPanel || appt.reason;
-        const sampleTypeEn = provider.facilityEn
-          ? `Venous Blood / Lab Specimen @ ${provider.facilityEn}`
-          : 'Venous Blood / Lab Specimen';
-        const sampleTypeAr = (provider.facilityAr || provider.facilityEn)
-          ? `عينة معملية @ ${provider.facilityAr || provider.facilityEn}`
-          : 'عينة معملية';
-        const sample = await this.prisma.labSample.create({
-          data: {
-            barcode: `EG${randomBytes(4).toString('hex').toUpperCase()}`,
-            patientId: appt.patientId,
-            panelEn: panel,
-            panelAr: panel,
-            sampleTypeEn,
-            sampleTypeAr,
-            orderedById: targetProviderId,
-            priority: 'ROUTINE',
-            status: 'AWAITING_COLLECTION',
-          },
-        });
-        if (citizenUser) {
-          await this.notifs.sendToUser(
-            citizenUser.id,
-            NotifType.APPOINTMENT_CONFIRMED,
-            'Lab Appointment Confirmed & Barcode Issued',
-            'تم تأكيد حجز المعمل وإصدار باركود العينة',
-            `Your lab booking at ${provider.facilityEn ?? provider.fullNameEn} for (${panel}) is confirmed. Barcode: ${sample.barcode}`,
-            `تم تأكيد حجزك في (${provider.facilityAr ?? provider.fullNameAr}) لإجراء (${panel}). باركود العينة: ${sample.barcode}`,
-            { appointmentId: appt.id, sampleId: sample.id, barcode: sample.barcode, scheduledAt: dto.scheduledAt },
-          );
+        const isRadiology = Boolean(
+          provider.specialityEn?.toUpperCase().startsWith('RADIOLOGY') ||
+            provider.licenseNo?.toUpperCase().startsWith('RAD-'),
+        );
+        if (isRadiology) {
+          if (citizenUser) {
+            await this.notifs.sendToUser(
+              citizenUser.id,
+              NotifType.APPOINTMENT_CONFIRMED,
+              'Radiology Imaging Appointment Confirmed',
+              'تم تأكيد موعد الأشعة التشخيصية — بانتظار حضورك',
+              `Your imaging appointment at ${provider.facilityEn ?? provider.fullNameEn} for (${panel}) is confirmed.`,
+              `تم تأكيد حجز فحص الأشعة في (${provider.facilityAr ?? provider.fullNameAr}) لإجراء (${panel}). يرجى الحضور في الموعد المحدد.`,
+              { appointmentId: appt.id, radiology: true, scheduledAt: dto.scheduledAt },
+            );
+          }
+        } else {
+          const sampleTypeEn = provider.facilityEn
+            ? `Venous Blood / Lab Specimen @ ${provider.facilityEn}`
+            : 'Venous Blood / Lab Specimen';
+          const sampleTypeAr = (provider.facilityAr || provider.facilityEn)
+            ? `عينة معملية @ ${provider.facilityAr || provider.facilityEn}`
+            : 'عينة معملية';
+          const sample = await this.prisma.labSample.create({
+            data: {
+              barcode: `EG${randomBytes(4).toString('hex').toUpperCase()}`,
+              patientId: appt.patientId,
+              panelEn: panel,
+              panelAr: panel,
+              sampleTypeEn,
+              sampleTypeAr,
+              orderedById: targetProviderId,
+              priority: 'ROUTINE',
+              status: 'AWAITING_COLLECTION',
+            },
+          });
+          if (citizenUser) {
+            await this.notifs.sendToUser(
+              citizenUser.id,
+              NotifType.APPOINTMENT_CONFIRMED,
+              'Lab Appointment Confirmed & Barcode Issued',
+              'تم تأكيد حجز المعمل وإصدار باركود العينة',
+              `Your lab booking at ${provider.facilityEn ?? provider.fullNameEn} for (${panel}) is confirmed. Barcode: ${sample.barcode}`,
+              `تم تأكيد حجزك في (${provider.facilityAr ?? provider.fullNameAr}) لإجراء (${panel}). باركود العينة: ${sample.barcode}`,
+              { appointmentId: appt.id, sampleId: sample.id, barcode: sample.barcode, scheduledAt: dto.scheduledAt },
+            );
+          }
         }
       }
     }
@@ -453,26 +471,26 @@ export class AppointmentsService {
 export class AppointmentsController {
   constructor(private svc: AppointmentsService) {}
 
-  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH, Role.ADMIN, Role.EXECUTIVE) @Get('appointments')
+  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH) @Get('appointments')
   list(@CurrentUser() u: AuthUser) { return this.svc.listAppointments(u); }
-  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH, Role.ADMIN) @Post('appointments/:id/confirm')
+  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH) @Post('appointments/:id/confirm')
   confirm(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ConfirmDto, @CurrentUser() u: AuthUser) { return this.svc.confirm(id, dto, u); }
-  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.ADMIN) @Post('appointments/:id/check-in')
+  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR) @Post('appointments/:id/check-in')
   checkIn(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.checkIn(id, u); }
-  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH, Role.ADMIN) @Post('appointments/:id/reject')
+  @Audit('APPOINTMENT') @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH) @Post('appointments/:id/reject')
   reject(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DecideDto, @CurrentUser() u: AuthUser) { return this.svc.rejectAppointment(id, dto, u); }
-  @Roles(Role.RECEPTIONIST, Role.PATIENT, Role.DOCTOR, Role.HOSPITAL_STAFF, Role.ADMIN, Role.EXECUTIVE) @Get('doctors')
+  @Roles(Role.RECEPTIONIST, Role.PATIENT, Role.DOCTOR, Role.HOSPITAL_STAFF) @Get('doctors')
   doctors() { return this.svc.doctors(); }
 
-  @Audit('RENEWAL') @Roles(Role.DOCTOR, Role.ADMIN, Role.EXECUTIVE) @Get('renewals')
+  @Audit('RENEWAL') @Roles(Role.DOCTOR) @Get('renewals')
   renewals(@CurrentUser() u: AuthUser) { return this.svc.listRenewals(u); }
-  @Audit('RENEWAL') @Roles(Role.DOCTOR, Role.ADMIN) @Post('renewals/:id/approve')
+  @Audit('RENEWAL') @Roles(Role.DOCTOR) @Post('renewals/:id/approve')
   approve(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.approveRenewal(id, u); }
-  @Audit('RENEWAL') @Roles(Role.DOCTOR, Role.ADMIN) @Post('renewals/:id/reject')
+  @Audit('RENEWAL') @Roles(Role.DOCTOR) @Post('renewals/:id/reject')
   rejectRenewal(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DecideDto, @CurrentUser() u: AuthUser) { return this.svc.rejectRenewal(id, dto, u); }
 
   /** Brute-force guard: 10 attempts / minute per client on a 50-bit, single-use, 10-minute code. */
-  @Audit('SHARED_RECORD') @Roles(Role.DOCTOR, Role.ADMIN) @Throttle({ default: { limit: 10, ttl: 60_000 } }) @Post('shares/redeem')
+  @Audit('SHARED_RECORD') @Roles(Role.DOCTOR) @Throttle({ default: { limit: 10, ttl: 60_000 } }) @Post('shares/redeem')
   redeem(@Body() dto: RedeemDto, @CurrentUser() u: AuthUser) { return this.svc.redeem(dto.code, u); }
 }
 

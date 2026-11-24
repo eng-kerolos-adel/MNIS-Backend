@@ -113,7 +113,7 @@ export class ReagentsService {
 @ApiTags('lab-reagents')
 @ApiBearerAuth()
 @Audit('LAB_REAGENT')
-@Roles(Role.LAB_TECH, Role.ADMIN, Role.EXECUTIVE)
+@Roles(Role.LAB_TECH)
 @Controller('lab/reagents')
 export class ReagentsController {
   constructor(private svc: ReagentsService) {}
@@ -125,14 +125,14 @@ export class ReagentsController {
   listAlerts() { return this.svc.listAlerts(); }
 
   @Post()
-  @Roles(Role.LAB_TECH, Role.ADMIN)
+  @Roles(Role.LAB_TECH)
   create(@Body() dto: CreateReagentDto) { return this.svc.create(dto); }
 
   @Patch(':id')
-  @Roles(Role.LAB_TECH, Role.ADMIN)
+  @Roles(Role.LAB_TECH)
   update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateReagentDto) { return this.svc.update(id, dto); }
 
   @Delete(':id')
-  @Roles(Role.LAB_TECH, Role.ADMIN)
+  @Roles(Role.LAB_TECH)
   remove(@Param('id', ParseUUIDPipe) id: string) { return this.svc.remove(id); }
 }
