@@ -5,7 +5,7 @@
   "description": "MNIS unified backend (REST) serving the Next.js portal and the Flutter app",
   "main": "dist/firebase-function.js",
   "engines": {
-    "node": "22"
+    "node": ">=22"
   },
   "scripts": {
     "build": "nest build",
@@ -41,10 +41,10 @@
     "prisma": "^6.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@nestjs/cli": "^11.0.0",
+    "@nestjs/cli": "^12.0.15",
     "@types/cookie-parser": "^1.4.7",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
@@ -56,6 +56,8 @@
     "@prisma/engines@6.12.0": true,
     "prisma@6.12.0": true,
     "argon2@0.43.1": true,
-    "@scarf/scarf@1.4.0": true
+    "@scarf/scarf@1.4.0": true,
+    "@firebase/util@1.15.3": true,
+    "protobufjs@7.6.6": true
   }
 }
