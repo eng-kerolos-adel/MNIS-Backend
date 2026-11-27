@@ -171,6 +171,21 @@ enum NotifType {
   RENEWAL_DECIDED
   CARD_REVOKED
   GENERAL
+  MEDICATION_REMINDER
+  ADDRESS_CHANGE_REQUEST
+  ADDRESS_CHANGE_DECIDED
+  NEW_APPOINTMENT_REQUEST
+  NEW_RENEWAL_REQUEST
+  NEW_PRESCRIPTION_SIGNED
+  NEW_REFERRAL
+  LAB_ORDER_CREATED
+  EMERGENCY_ALERT
+}
+
+enum AddressChangeStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 // ─────────────────────────────────────────────
@@ -191,17 +206,27 @@ model User {
   specialityAr       String?
   facilityEn         String?   // which hospital/clinic/lab they belong to
   facilityAr         String?
+  governorate        String?
+  city               String?
+  district           String?
+  addressEn          String?
+  addressAr          String?
+  latitude           Float?
+  longitude          Float?
   isActive           Boolean   @default(true)
   failedLogins       Int       @default(0)
   lockedUntil        DateTime?
   createdAt          DateTime  @default(now())
 
-  patient         Patient?          @relation(fields: [patientId], references: [id])
-  refreshTokens   RefreshToken[]
-  auditLogs       AuditLog[]
-  pushTokens      PushToken[]
-  schedules       DoctorSchedule[]  // only populated for DOCTOR role
-  referralsSent   Referral[]        @relation("ReferralSender")
+  patient               Patient?               @relation(fields: [patientId], references: [id])
+  refreshTokens         RefreshToken[]
+  auditLogs             AuditLog[]
+  pushTokens            PushToken[]
+  schedules             DoctorSchedule[]       // only populated for DOCTOR role
+  referralsSent         Referral[]             @relation("ReferralSender")
+  addressChangeRequests AddressChangeRequest[] @relation("DoctorAddressChanges")
+
+  @@index([role, isActive, governorate])
 }
 
 model RefreshToken {
@@ -284,7 +309,10 @@ model Patient {
   birthDate         DateTime
   bloodType         String?
   phone             String?   @unique // Normalized E.164 mobile registered by reception (e.g. +201012345678) — one citizen per number
-  phoneVerifiedAt   DateTime? // Populated after Firebase Phone Auth SMS OTP verification
+  phoneVerifiedAt   DateTime? // Populated after Firebase Phone Auth / In-App SMS OTP verification
+  phoneOtpHash      String?
+  phoneOtpExpiresAt DateTime?
+  phoneOtpAttempts  Int       @default(0)
   /// Structured address for GIS/epidemiology analytics
   governorate       String?   // e.g. "CAIRO", "GIZA", "ALEXANDRIA" …
   city              String?
@@ -319,9 +347,10 @@ model Patient {
   referrals       Referral[]
   conditionFlags  ConditionFlag[]
   pharmacyClaims  PharmacyClaim[]
-  allowances      ChronicAllowance[]
-  radiology       RadiologyUpload[]
-  orCases         OrCase[]
+  allowances          ChronicAllowance[]
+  radiology           RadiologyUpload[]
+  orCases             OrCase[]
+  medicationReminders MedicationReminder[]
 
   @@index([fullNameEn])
   @@index([governorate])
@@ -347,6 +376,63 @@ model NfcCard {
   patient Patient @relation(fields: [patientId], references: [id])
 
   @@index([patientId])
+}
+
+// ─────────────────────────────────────────────
+//  DOCTOR ADDRESS CHANGES & MEDICATION REMINDERS
+// ─────────────────────────────────────────────
+
+model AddressChangeRequest {
+  id               String              @id @default(uuid())
+  doctorId         String
+  currentAddressAr String?
+  currentAddressEn String?
+  newGovernorate   String
+  newCity          String?
+  newDistrict      String?
+  newAddressAr     String
+  newAddressEn     String?
+  newLatitude      Float?
+  newLongitude     Float?
+  reason           String?
+  status           AddressChangeStatus @default(PENDING)
+  reviewedById     String?
+  reviewedAt       DateTime?
+  reviewNote       String?
+  createdAt        DateTime            @default(now())
+
+  doctor User @relation("DoctorAddressChanges", fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([doctorId])
+}
+
+model MedicationReminder {
+  id                 String    @id @default(uuid())
+  patientId          String
+  prescriptionId     String
+  prescriptionItemId String    @unique
+  drugNameEn         String
+  drugNameAr         String
+  dose               String
+  frequencyEn        String
+  frequencyAr        String
+  timesPerDay        Int       @default(1)
+  intervalHours      Int       @default(24)
+  scheduleTimes      Json      @default("[\"09:00\"]")
+  durationDays       Int       @default(7)
+  startsAt           DateTime
+  endsAt             DateTime
+  isActive           Boolean   @default(true)
+  lastTakenAt        DateTime?
+  dosesTakenCount    Int       @default(0)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId, isActive])
+  @@index([prescriptionId])
 }
 
 // ─────────────────────────────────────────────

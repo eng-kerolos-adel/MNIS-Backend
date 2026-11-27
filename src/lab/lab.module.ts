@@ -161,6 +161,31 @@ export class LabService {
       include,
     });
     const [hydrated] = await this.hydrateStaff([created]);
+    if (targetLabUserId) {
+      void this.notifs
+        .sendToUser(
+          targetLabUserId,
+          NotifType.LAB_ORDER_CREATED,
+          `New Lab Order (${created.barcode})`,
+          `طلب فحص معملي جديد (${created.barcode})`,
+          `${hydrated.patient?.fullNameEn ?? 'Citizen'} — ${created.panelEn} (${created.priority})`,
+          `طلب فحص (${created.panelAr}) للمواطن ${hydrated.patient?.fullNameAr ?? ''} (${created.priority}).`,
+          { category: 'LAB_ORDER', sampleId: created.id, barcode: created.barcode, href: '/lab/sample-intake' },
+        )
+        .catch(() => undefined);
+    } else {
+      void this.notifs
+        .notifyRoles(
+          [Role.LAB_TECH],
+          NotifType.LAB_ORDER_CREATED,
+          `New Lab Order (${created.barcode})`,
+          `طلب تحليل معملي جديد (${created.barcode})`,
+          `${hydrated.patient?.fullNameEn ?? 'Citizen'} — ${created.panelEn}`,
+          `طلب تحليل (${created.panelAr}) للمواطن ${hydrated.patient?.fullNameAr ?? ''}.`,
+          { category: 'LAB_ORDER', sampleId: created.id, barcode: created.barcode, href: '/lab/sample-intake' },
+        )
+        .catch(() => undefined);
+    }
     return hydrated;
   }
 
@@ -237,17 +262,30 @@ export class LabService {
         });
       }
       const citizenUser = await this.prisma.user.findUnique({ where: { patientId: verified.patientId } });
-      if (citizenUser) {
-        await this.notifs.sendToUser(
-          citizenUser.id,
-          NotifType.LAB_RESULT_READY,
-          'Lab Results Verified & Ready',
-          'نتائج التحاليل الطبية جاهزة ومعتمدة',
-          `Your lab results for ${verified.panelEn} (${verified.barcode}) have been verified and are ready to view.`,
-          `تم اعتماد نتائج تحليل ${verified.panelAr} (${verified.barcode}) وهي متاحة الآن في ملفك الطبي.`,
-          { sampleId: verified.id, barcode: verified.barcode }
-        );
-      }
+      await Promise.all([
+        citizenUser
+          ? this.notifs.sendToUser(
+              citizenUser.id,
+              NotifType.LAB_RESULT_READY,
+              'Lab Results Verified & Ready',
+              'نتائج التحاليل الطبية جاهزة ومعتمدة',
+              `Your lab results for ${verified.panelEn} (${verified.barcode}) have been verified and are ready to view.`,
+              `تم اعتماد نتائج تحليل ${verified.panelAr} (${verified.barcode}) وهي متاحة الآن في ملفك الطبي.`,
+              { sampleId: verified.id, barcode: verified.barcode },
+            )
+          : Promise.resolve(),
+        verified.orderedById && verified.orderedById !== user.id
+          ? this.notifs.sendToUser(
+              verified.orderedById,
+              NotifType.LAB_RESULT_READY,
+              `Verified Lab Results Ready (${verified.barcode})`,
+              `نتيجة معملية معتمدة جاهزة (${verified.barcode})`,
+              `${verified.patient?.fullNameEn ?? 'Patient'} — ${verified.panelEn} verified and ready for physician review.`,
+              `تم اعتماد نتيجة (${verified.panelAr}) للمواطن ${verified.patient?.fullNameAr ?? ''} وبانتظار مراجعتك.`,
+              { sampleId: verified.id, barcode: verified.barcode, href: '/doctor/lab-orders' },
+            )
+          : Promise.resolve(),
+      ]).catch(() => undefined);
       const [hydrated] = await this.hydrateStaff([verified]);
       return hydrated;
     }
@@ -266,6 +304,22 @@ export class LabService {
       },
     });
     const [hydrated] = await this.hydrateFlags([flag]);
+    if (dto.sampleId) {
+      const samp = await this.prisma.labSample.findUnique({ where: { id: dto.sampleId }, select: { orderedById: true } });
+      if (samp?.orderedById) {
+        void this.notifs
+          .sendToUser(
+            samp.orderedById,
+            NotifType.GENERAL,
+            `Clinical Flag Raised by Lab (${dto.conditionEn})`,
+            `تنبيه إكلينيكي جديد من المعمل (${dto.conditionAr})`,
+            `${hydrated.patient?.fullNameEn ?? 'Patient'}: flagged ${dto.conditionType} requiring physician review.`,
+            `رصد المعمل (${dto.conditionAr}) للمواطن ${hydrated.patient?.fullNameAr ?? ''} وبانتظار اعتمادك الطبي.`,
+            { category: 'CONDITION_FLAG', flagId: flag.id, href: '/doctor/referrals', severity: 'WARNING' },
+          )
+          .catch(() => undefined);
+      }
+    }
     return hydrated;
   }
 

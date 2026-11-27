@@ -14,14 +14,16 @@ import {
   ConflictException
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Role, AppointmentType, NfcCardStatus } from '@prisma/client';
-import { IsBoolean, IsEnum, IsString, IsUUID, IsOptional, IsInt, Min, Max, IsDateString } from 'class-validator';
+import { Role, AppointmentType, NfcCardStatus, NotifType } from '@prisma/client';
+import { IsArray, IsBoolean, IsEnum, IsString, IsUUID, IsOptional, IsInt, Min, Max, IsDateString, Matches, ArrayMinSize, ArrayMaxSize } from 'class-validator';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { CryptoService, CryptoModule } from '../common/crypto.service';
 import { maskPhone } from '../common/phone.util';
+import { parseMedicationSchedule } from '../common/medication-schedule.util';
 import { Audit, CurrentUser, AuthUser, Roles } from '../common/decorators';
+import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
 
 // --- DTOs ---
 export class CreateAppointmentDto {
@@ -78,10 +80,28 @@ export class UpdateMyProfileDto {
   organDonor?: boolean;
 }
 
+export class UpdateMedicationReminderDto {
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(8)
+  @IsString({ each: true })
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { each: true })
+  scheduleTimes?: string[];
+}
+
 // --- Service ---
 @Injectable()
 export class MeService {
-  constructor(private prisma: PrismaService, private crypto: CryptoService) {}
+  constructor(
+    private prisma: PrismaService,
+    private crypto: CryptoService,
+    private notifs: NotificationsService,
+  ) {}
 
   private async getPatientId(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { patientId: true } });
@@ -230,6 +250,61 @@ export class MeService {
         status: 'REQUESTED',
       },
     });
+
+    // Notify target provider & clinic assistant / lab team in real time
+    const [citizen, providerUser] = await Promise.all([
+      this.prisma.patient.findUnique({ where: { id: patientId }, select: { fullNameAr: true, fullNameEn: true, mti: true } }),
+      providerId
+        ? this.prisma.user.findUnique({
+            where: { id: providerId },
+            select: { id: true, role: true, facilityEn: true, specialityEn: true, licenseNo: true },
+          })
+        : Promise.resolve(null),
+    ]);
+    if (providerUser) {
+      const targetUserIds = new Set<string>([providerUser.id]);
+      if (dto.type === 'CLINIC' && providerUser.facilityEn) {
+        const assistants = await this.prisma.user.findMany({
+          where: { role: Role.RECEPTIONIST, specialityEn: 'CLINIC_ASSISTANT', facilityEn: providerUser.facilityEn, isActive: true },
+          select: { id: true },
+        });
+        assistants.forEach((a) => targetUserIds.add(a.id));
+      } else if (dto.type === 'LAB' && providerUser.facilityEn) {
+        const labTeam = await this.prisma.user.findMany({
+          where: { role: Role.LAB_TECH, facilityEn: providerUser.facilityEn, isActive: true },
+          select: { id: true },
+        });
+        labTeam.forEach((l) => targetUserIds.add(l.id));
+      }
+      const isRad =
+        dto.type === 'LAB' &&
+        (providerUser.specialityEn?.toUpperCase().startsWith('RADIOLOGY') ||
+          providerUser.licenseNo?.toUpperCase().startsWith('RAD-'));
+      const href = dto.type === 'CLINIC' ? '/doctor/appointments' : '/lab/appointments';
+      const titleAr =
+        dto.type === 'CLINIC'
+          ? `طلب حجز عيادة جديد — ${citizen?.fullNameAr ?? ''}`
+          : isRad
+            ? `طلب حجز أشعة جديد — ${citizen?.fullNameAr ?? ''}`
+            : `طلب حجز معمل تحاليل جديد — ${citizen?.fullNameAr ?? ''}`;
+      const titleEn =
+        dto.type === 'CLINIC'
+          ? `New Clinic Booking Request — ${citizen?.fullNameEn ?? ''}`
+          : isRad
+            ? `New Radiology Booking Request — ${citizen?.fullNameEn ?? ''}`
+            : `New Lab Booking Request — ${citizen?.fullNameEn ?? ''}`;
+      const bodyAr = `المواطن (${citizen?.mti ?? ''}) • ${dto.testPanel ? `${dto.testPanel} — ` : ''}${dto.reason}`;
+      const bodyEn = `Citizen (${citizen?.mti ?? ''}) • ${dto.testPanel ? `${dto.testPanel} — ` : ''}${dto.reason}`;
+      void this.notifs
+        .notifyManyUsers(Array.from(targetUserIds), NotifType.NEW_APPOINTMENT_REQUEST, titleEn, titleAr, bodyEn, bodyAr, {
+          category: 'APPOINTMENT_REQUEST',
+          appointmentId: created.id,
+          href,
+          severity: 'INFO',
+        })
+        .catch(() => undefined);
+    }
+
     const map = await this.getUsersMap([created.doctorId]);
     return { ...created, doctor: created.doctorId ? (map.get(created.doctorId) ?? null) : null };
   }
@@ -267,13 +342,32 @@ export class MeService {
     });
     if (existing) throw new ConflictException('Pending renewal already exists for this prescription');
 
-    return this.prisma.renewalRequest.create({
+    const renewal = await this.prisma.renewalRequest.create({
       data: {
         patientId,
         prescriptionId: dto.prescriptionId,
         status: 'PENDING'
       }
     });
+
+    const citizen = await this.prisma.patient.findUnique({
+      where: { id: patientId },
+      select: { fullNameAr: true, fullNameEn: true, mti: true },
+    });
+    if (rx.physicianId) {
+      void this.notifs
+        .sendToUser(
+          rx.physicianId,
+          NotifType.NEW_RENEWAL_REQUEST,
+          `Rx Renewal Request (#${rx.code})`,
+          `طلب تجديد روشتة مزمنة (#${rx.code})`,
+          `${citizen?.fullNameEn ?? 'Citizen'} (${citizen?.mti ?? ''}) requested a renewal for prescription #${rx.code}.`,
+          `طلب المواطن ${citizen?.fullNameAr ?? ''} (${citizen?.mti ?? ''}) تجديد الروشتة رقم #${rx.code}.`,
+          { category: 'RENEWAL_REQUEST', renewalId: renewal.id, prescriptionId: rx.id, href: '/doctor/e-prescriptions' },
+        )
+        .catch(() => undefined);
+    }
+    return renewal;
   }
 
   async generateShareToken(userId: string) {
@@ -327,7 +421,7 @@ export class MeService {
       throw new BadRequestException('FILE_SIZE_INVALID');
     }
 
-    return this.prisma.document.create({
+    const doc = await this.prisma.document.create({
       data: {
         patientId,
         label: dto.label,
@@ -337,6 +431,28 @@ export class MeService {
         status: 'PENDING_REVIEW'
       }
     });
+
+    const [latestRx, latestVisit, citizen] = await Promise.all([
+      this.prisma.prescription.findFirst({ where: { patientId }, orderBy: { createdAt: 'desc' }, select: { physicianId: true } }),
+      this.prisma.visit.findFirst({ where: { patientId, doctorId: { not: null } }, orderBy: { arrivedAt: 'desc' }, select: { doctorId: true } }),
+      this.prisma.patient.findUnique({ where: { id: patientId }, select: { fullNameAr: true, fullNameEn: true, mti: true } }),
+    ]);
+    const targetDoctorId = latestVisit?.doctorId ?? latestRx?.physicianId;
+    if (targetDoctorId) {
+      void this.notifs
+        .sendToUser(
+          targetDoctorId,
+          NotifType.GENERAL,
+          `New Medical Document Uploaded — ${citizen?.fullNameEn ?? ''}`,
+          `مستند طبي جديد من المريض — ${citizen?.fullNameAr ?? ''}`,
+          `${citizen?.fullNameEn ?? 'Citizen'} uploaded "${dto.label}" for clinical review.`,
+          `قام المواطن ${citizen?.fullNameAr ?? ''} (${citizen?.mti ?? ''}) برفع مستند "${dto.label}" للمراجعة الطبية.`,
+          { category: 'DOCUMENT_UPLOADED', documentId: doc.id, href: `/doctor/consultation?patientId=${patientId}` },
+        )
+        .catch(() => undefined);
+    }
+
+    return doc;
   }
 
   async getActiveCard(userId: string) {
@@ -579,6 +695,86 @@ export class MeService {
       })),
     };
   }
+
+  async getMedicationReminders(userId: string) {
+    const patientId = await this.getPatientId(userId);
+    // Backfill reminder schedules for any already-dispensed prescriptions missing reminders
+    const dispensedRxs = await this.prisma.prescription.findMany({
+      where: { patientId, status: 'DISPENSED' },
+      include: { items: true },
+      orderBy: { dispensedAt: 'desc' },
+      take: 30,
+    });
+    for (const rx of dispensedRxs) {
+      const baseDate = rx.dispensedAt ?? rx.createdAt;
+      for (const item of rx.items) {
+        const parsed = parseMedicationSchedule(item.frequencyEn, item.frequencyAr, item.durationDays, baseDate);
+        await this.prisma.medicationReminder.upsert({
+          where: { prescriptionItemId: item.id },
+          create: {
+            patientId,
+            prescriptionId: rx.id,
+            prescriptionItemId: item.id,
+            drugNameEn: item.nameEn,
+            drugNameAr: item.nameAr,
+            dose: item.dose,
+            frequencyEn: item.frequencyEn,
+            frequencyAr: item.frequencyAr,
+            timesPerDay: parsed.timesPerDay,
+            intervalHours: parsed.intervalHours,
+            scheduleTimes: parsed.scheduleTimes,
+            durationDays: item.durationDays,
+            startsAt: parsed.startsAt,
+            endsAt: parsed.endsAt,
+            isActive: parsed.endsAt > new Date(),
+          },
+          update: {},
+        });
+      }
+    }
+
+    return this.prisma.medicationReminder.findMany({
+      where: { patientId },
+      orderBy: [{ isActive: 'desc' }, { endsAt: 'desc' }, { createdAt: 'desc' }],
+      take: 100,
+    });
+  }
+
+  async updateMedicationReminder(userId: string, reminderId: string, dto: UpdateMedicationReminderDto) {
+    const patientId = await this.getPatientId(userId);
+    const existing = await this.prisma.medicationReminder.findUnique({ where: { id: reminderId } });
+    if (!existing || existing.patientId !== patientId) {
+      throw new NotFoundException('REMINDER_NOT_FOUND');
+    }
+    return this.prisma.medicationReminder.update({
+      where: { id: reminderId },
+      data: {
+        ...(typeof dto.isActive === 'boolean' ? { isActive: dto.isActive } : {}),
+        ...(dto.scheduleTimes
+          ? {
+              scheduleTimes: dto.scheduleTimes,
+              timesPerDay: dto.scheduleTimes.length,
+              intervalHours: Math.max(1, Math.round(24 / dto.scheduleTimes.length)),
+            }
+          : {}),
+      },
+    });
+  }
+
+  async markDoseTaken(userId: string, reminderId: string) {
+    const patientId = await this.getPatientId(userId);
+    const existing = await this.prisma.medicationReminder.findUnique({ where: { id: reminderId } });
+    if (!existing || existing.patientId !== patientId) {
+      throw new NotFoundException('REMINDER_NOT_FOUND');
+    }
+    return this.prisma.medicationReminder.update({
+      where: { id: reminderId },
+      data: {
+        lastTakenAt: new Date(),
+        dosesTakenCount: { increment: 1 },
+      },
+    });
+  }
 }
 
 // --- Controller ---
@@ -649,11 +845,30 @@ export class MeController {
 
   @Get('summary-hub')
   getSummaryHub(@CurrentUser() user: AuthUser) { return this.svc.getSummaryHub(user.id); }
+
+  @Get('medication-reminders')
+  getMedicationReminders(@CurrentUser() user: AuthUser) {
+    return this.svc.getMedicationReminders(user.id);
+  }
+
+  @Patch('medication-reminders/:id')
+  updateMedicationReminder(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateMedicationReminderDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.svc.updateMedicationReminder(user.id, id, dto);
+  }
+
+  @Post('medication-reminders/:id/taken')
+  markDoseTaken(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.svc.markDoseTaken(user.id, id);
+  }
 }
 
 // --- Module ---
 @Module({
-  imports: [PrismaModule, CryptoModule],
+  imports: [PrismaModule, CryptoModule, NotificationsModule],
   controllers: [MeController],
   providers: [MeService],
   exports: [MeService],

@@ -260,18 +260,42 @@ export class ReferralsService {
       where: { patientId: dto.patientId },
       select: { id: true },
     });
-    if (citizenUser) {
-      const tAr = target === ReferralTarget.HOSPITAL ? 'المستشفى' : target === ReferralTarget.LAB ? 'المعمل المركزي' : 'الصيدلية';
-      await this.notifs.sendToUser(
-        citizenUser.id,
-        NotifType.REFERRAL_UPDATED,
-        'New Medical Referral Issued',
-        'تم إصدار تحويل طبي جديد في ملفك',
-        `You have been referred to ${target} (${reasonEn}).`,
-        `تم إصدار تحويل طبي لك إلى ${tAr} (${reasonAr}).`,
-        { referralId: res.id, target, urgency: dto.urgency },
-      ).catch(() => undefined);
-    }
+    const tAr = target === ReferralTarget.HOSPITAL ? 'المستشفى' : target === ReferralTarget.LAB ? 'المعمل المركزي' : 'الصيدلية';
+    const targetRole = TARGET_ROLE_MAP[target];
+    const targetHref =
+      target === ReferralTarget.HOSPITAL
+        ? '/hospital/er-triage'
+        : target === ReferralTarget.LAB
+          ? '/lab/sample-intake'
+          : '/pharmacy/dispensing-queue';
+    await Promise.all([
+      citizenUser
+        ? this.notifs.sendToUser(
+            citizenUser.id,
+            NotifType.REFERRAL_UPDATED,
+            'New Medical Referral Issued',
+            'تم إصدار تحويل طبي جديد في ملفك',
+            `You have been referred to ${target} (${reasonEn}).`,
+            `تم إصدار تحويل طبي لك إلى ${tAr} (${reasonAr}).`,
+            { referralId: res.id, target, urgency: dto.urgency },
+          )
+        : Promise.resolve(),
+      this.notifs.notifyRoles(
+        [targetRole],
+        NotifType.NEW_REFERRAL,
+        `Incoming ${dto.urgency} Referral — ${patient.fullNameEn}`,
+        `إحالة طبية ${dto.urgency === ReferralUrgency.CRITICAL ? 'حرجة' : 'جديدة'} إلى ${tAr}`,
+        `${patient.fullNameEn}: ${reasonEn}`,
+        `المواطن ${patient.fullNameAr}: ${reasonAr}`,
+        {
+          category: 'NEW_REFERRAL',
+          referralId: res.id,
+          urgency: dto.urgency,
+          href: targetHref,
+          severity: dto.urgency === ReferralUrgency.CRITICAL ? 'CRITICAL' : 'INFO',
+        },
+      ),
+    ]).catch(() => undefined);
 
     return this.mapReferral(res);
   }

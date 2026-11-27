@@ -22,6 +22,7 @@ const schema = z.object({
   FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),
   FIREBASE_AUTH_EMULATOR_HOST: z.string().optional(),
   FIRESTORE_EMULATOR_HOST: z.string().optional(),
+  GEMINI_API_KEY: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

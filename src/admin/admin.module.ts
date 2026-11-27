@@ -1,11 +1,13 @@
 import { BadRequestException, Body, Controller, Delete, Get, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Role } from '@prisma/client';
+import { AddressChangeStatus, NotifType, Role } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, Length, MaxLength, ValidateIf } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, Length, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
 import { generateTempPassword } from '../common/password.util';
+import { getGovernorateMeta, inferLocationFromFacilityText, normalizeGovernorate } from '../common/egypt-geo.util';
+import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
 
 const STAFF_ROLES = ['DOCTOR', 'PHARMACIST', 'LAB_TECH', 'HOSPITAL_STAFF', 'EXECUTIVE', 'RECEPTIONIST', 'ADMIN'] as const;
 
@@ -19,8 +21,30 @@ export class CreateStaffDto {
   @IsOptional() @IsString() @MaxLength(120) specialityAr?: string;
   @IsOptional() @IsString() @MaxLength(160) facilityEn?: string;
   @IsOptional() @IsString() @MaxLength(160) facilityAr?: string;
+  @IsOptional() @IsString() @MaxLength(80) governorate?: string;
+  @IsOptional() @IsString() @MaxLength(80) city?: string;
+  @IsOptional() @IsString() @MaxLength(80) district?: string;
+  @IsOptional() @IsString() @MaxLength(200) addressEn?: string;
+  @IsOptional() @IsString() @MaxLength(200) addressAr?: string;
+  @IsOptional() @IsNumber() @Min(-90) @Max(90) latitude?: number;
+  @IsOptional() @IsNumber() @Min(-180) @Max(180) longitude?: number;
 }
 export class ActiveDto { @IsBoolean() isActive: boolean; }
+
+export class UpdateLocationDto {
+  @IsString() @MaxLength(80) governorate: string;
+  @IsOptional() @IsString() @MaxLength(80) city?: string;
+  @IsOptional() @IsString() @MaxLength(80) district?: string;
+  @IsString() @Length(3, 200) addressAr: string;
+  @IsOptional() @IsString() @MaxLength(200) addressEn?: string;
+  @IsOptional() @IsNumber() @Min(-90) @Max(90) latitude?: number;
+  @IsOptional() @IsNumber() @Min(-180) @Max(180) longitude?: number;
+  @IsOptional() @IsBoolean() applyToFacility?: boolean;
+}
+
+export class ReviewAddressChangeDto {
+  @IsOptional() @IsString() @MaxLength(300) note?: string;
+}
 
 export class CreateFacilityBundleDto {
   @IsIn(['CLINIC', 'LAB', 'HOSPITAL', 'PHARMACY'])
@@ -65,24 +89,84 @@ export class CreateFacilityBundleDto {
 
   @IsOptional() @IsString() @MaxLength(60)
   licenseNo?: string;
+
+  @IsOptional() @IsString() @MaxLength(80)
+  governorate?: string;
+
+  @IsOptional() @IsString() @MaxLength(80)
+  city?: string;
+
+  @IsOptional() @IsString() @MaxLength(80)
+  district?: string;
+
+  @IsOptional() @IsString() @MaxLength(200)
+  addressEn?: string;
+
+  @IsOptional() @IsString() @MaxLength(200)
+  addressAr?: string;
+
+  @IsOptional() @IsNumber() @Min(-90) @Max(90)
+  latitude?: number;
+
+  @IsOptional() @IsNumber() @Min(-180) @Max(180)
+  longitude?: number;
 }
 
 const SELECT = {
   id: true, email: true, role: true, fullNameEn: true, fullNameAr: true, licenseNo: true,
   specialityEn: true, specialityAr: true, facilityEn: true, facilityAr: true,
+  governorate: true, city: true, district: true, addressEn: true, addressAr: true,
+  latitude: true, longitude: true,
   isActive: true, mustChangePassword: true, failedLogins: true, lockedUntil: true, createdAt: true,
 } as const;
 
 @Injectable()
 export class AdminService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private notifs: NotificationsService,
+  ) {}
+
+  private resolveLocationFields(input: {
+    governorate?: string;
+    city?: string;
+    district?: string;
+    addressEn?: string;
+    addressAr?: string;
+    latitude?: number;
+    longitude?: number;
+    facilityEn?: string;
+    facilityAr?: string;
+  }) {
+    const inferred = inferLocationFromFacilityText(input.facilityEn, input.facilityAr);
+    const normGov =
+      normalizeGovernorate(input.governorate) ??
+      normalizeGovernorate(input.addressAr) ??
+      normalizeGovernorate(input.addressEn) ??
+      inferred.governorate;
+    const meta = getGovernorateMeta(normGov);
+    const lat = typeof input.latitude === 'number' ? input.latitude : meta?.lat ?? inferred.latitude;
+    const lng = typeof input.longitude === 'number' ? input.longitude : meta?.lng ?? inferred.longitude;
+    const addrAr = input.addressAr?.trim() || (meta ? `${input.facilityAr?.trim() || ''}${input.facilityAr ? ' — ' : ''}${input.district ? `${input.district}، ` : ''}${meta.ar}` : inferred.addressAr);
+    const addrEn = input.addressEn?.trim() || input.addressAr?.trim() || (meta ? `${input.facilityEn?.trim() || ''}${input.facilityEn ? ', ' : ''}${input.district ? `${input.district}, ` : ''}${meta.en}` : inferred.addressEn);
+    return {
+      governorate: normGov,
+      city: input.city?.trim() || meta?.en || null,
+      district: input.district?.trim() || null,
+      addressAr: addrAr || null,
+      addressEn: addrEn || null,
+      latitude: lat,
+      longitude: lng,
+    };
+  }
 
   list() { return this.prisma.user.findMany({ where: { role: { not: Role.PATIENT } }, select: SELECT, orderBy: { createdAt: 'desc' }, take: 200 }); }
 
   async create(dto: CreateStaffDto) {
     const temp = generateTempPassword();
+    const loc = this.resolveLocationFields(dto);
     const user = await this.prisma.user.create({
-      data: { ...dto, email: dto.email.toLowerCase(), passwordHash: await argon2.hash(temp), mustChangePassword: true },
+      data: { ...dto, ...loc, email: dto.email.toLowerCase(), passwordHash: await argon2.hash(temp), mustChangePassword: true },
       select: SELECT,
     });
     // The temporary password is shown exactly once and never stored in clear.
@@ -268,15 +352,129 @@ export class AdminService {
       } else if (roles.has(Role.RECEPTIONIST)) {
         facilityType = 'RECEPTION';
       }
+      const primaryWithLoc = g.staff.find((s) => s.governorate || s.addressAr || s.latitude != null) ?? g.staff[0];
+      const fallbackLoc = inferLocationFromFacilityText(g.facilityEn, g.facilityAr);
       return {
         key: g.key,
         facilityType,
         facilityEn: g.facilityEn,
         facilityAr: g.facilityAr,
+        governorate: primaryWithLoc?.governorate ?? fallbackLoc.governorate,
+        city: primaryWithLoc?.city ?? fallbackLoc.city,
+        district: primaryWithLoc?.district ?? null,
+        addressAr: primaryWithLoc?.addressAr ?? fallbackLoc.addressAr,
+        addressEn: primaryWithLoc?.addressEn ?? fallbackLoc.addressEn,
+        latitude: primaryWithLoc?.latitude ?? fallbackLoc.latitude,
+        longitude: primaryWithLoc?.longitude ?? fallbackLoc.longitude,
         staffCount: g.staff.length,
         staff: g.staff,
       };
     });
+  }
+
+  async updateStaffLocation(id: string, dto: UpdateLocationDto) {
+    const target = await this.prisma.user.findUnique({ where: { id }, select: { id: true, role: true, facilityEn: true, facilityAr: true } });
+    if (!target || target.role === Role.PATIENT) throw new NotFoundException('STAFF_NOT_FOUND');
+    const loc = this.resolveLocationFields({
+      ...dto,
+      facilityEn: target.facilityEn ?? undefined,
+      facilityAr: target.facilityAr ?? undefined,
+    });
+    if (dto.applyToFacility && target.facilityEn) {
+      await this.prisma.user.updateMany({
+        where: { facilityEn: target.facilityEn, role: { not: Role.PATIENT } },
+        data: loc,
+      });
+    } else {
+      await this.prisma.user.update({ where: { id }, data: loc });
+    }
+    return this.prisma.user.findUniqueOrThrow({ where: { id }, select: SELECT });
+  }
+
+  async listAddressChangeRequests() {
+    const rows = await this.prisma.addressChangeRequest.findMany({
+      include: {
+        doctor: {
+          select: {
+            id: true, fullNameAr: true, fullNameEn: true, email: true,
+            facilityAr: true, facilityEn: true, specialityAr: true, specialityEn: true,
+            governorate: true, city: true, district: true, addressAr: true, addressEn: true,
+          },
+        },
+      },
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+      take: 100,
+    });
+    return rows;
+  }
+
+  async decideAddressChangeRequest(
+    id: string,
+    decision: 'APPROVED' | 'REJECTED',
+    reviewerId: string,
+    note?: string,
+  ) {
+    const req = await this.prisma.addressChangeRequest.findUnique({
+      where: { id },
+      include: { doctor: { select: { id: true, facilityEn: true, fullNameAr: true, fullNameEn: true } } },
+    });
+    if (!req) throw new NotFoundException('ADDRESS_REQUEST_NOT_FOUND');
+    if (req.status !== AddressChangeStatus.PENDING) {
+      throw new BadRequestException('ADDRESS_REQUEST_ALREADY_DECIDED');
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (decision === 'APPROVED') {
+        const meta = getGovernorateMeta(req.newGovernorate);
+        const locData = {
+          governorate: normalizeGovernorate(req.newGovernorate) ?? req.newGovernorate,
+          city: req.newCity || meta?.en || null,
+          district: req.newDistrict || null,
+          addressAr: req.newAddressAr,
+          addressEn: req.newAddressEn || req.newAddressAr,
+          latitude: req.newLatitude ?? meta?.lat ?? null,
+          longitude: req.newLongitude ?? meta?.lng ?? null,
+        };
+        await tx.user.update({ where: { id: req.doctorId }, data: locData });
+        if (req.doctor.facilityEn) {
+          await tx.user.updateMany({
+            where: {
+              facilityEn: req.doctor.facilityEn,
+              role: Role.RECEPTIONIST,
+              specialityEn: 'CLINIC_ASSISTANT',
+            },
+            data: locData,
+          });
+        }
+      }
+      return tx.addressChangeRequest.update({
+        where: { id },
+        data: {
+          status: decision === 'APPROVED' ? AddressChangeStatus.APPROVED : AddressChangeStatus.REJECTED,
+          reviewedById: reviewerId,
+          reviewedAt: new Date(),
+          reviewNote: note?.trim() || null,
+        },
+      });
+    });
+
+    await this.notifs
+      .sendToUser(
+        req.doctorId,
+        NotifType.ADDRESS_CHANGE_DECIDED,
+        decision === 'APPROVED' ? 'Clinic Address Change Approved' : 'Clinic Address Change Rejected',
+        decision === 'APPROVED' ? 'تمت الموافقة على تغيير عنوان العيادة ✓' : 'تم رفض طلب تغيير عنوان العيادة',
+        decision === 'APPROVED'
+          ? `Admin approved your clinic relocation to: ${req.newAddressEn || req.newAddressAr}.`
+          : `Your clinic address change request was declined${note ? `: ${note}` : '.'}`,
+        decision === 'APPROVED'
+          ? `وافق مدير النظام على تحديث عنوان عيادتك إلى: ${req.newAddressAr}.`
+          : `رفض مدير النظام طلب تغيير عنوان العيادة${note ? `: ${note}` : '.'}`,
+        { category: 'ADDRESS_CHANGE_DECIDED', requestId: id, status: decision, href: '/doctor/schedule' },
+      )
+      .catch(() => undefined);
+
+    return updated;
   }
 
   private async ensureUniqueEmail(candidateEmail: string, rolePrefix: string, excludeEmail?: string): Promise<string> {
@@ -336,6 +534,7 @@ export class AdminService {
 
     const facilityEn = dto.facilityEn.trim();
     const facilityAr = dto.facilityAr.trim();
+    const loc = this.resolveLocationFields({ ...dto, facilityEn, facilityAr });
 
     const accounts: Array<{
       user: Record<string, unknown>;
@@ -358,6 +557,7 @@ export class AdminService {
             specialityAr: dto.specialityAr?.trim() || 'الباطنة والطب العام',
             facilityEn,
             facilityAr,
+            ...loc,
             mustChangePassword: false,
           },
           select: SELECT,
@@ -394,6 +594,7 @@ export class AdminService {
               specialityAr: 'مساعد طبيب وإدارة عيادة',
               facilityEn,
               facilityAr,
+              ...loc,
               mustChangePassword: false,
             },
             select: SELECT,
@@ -423,6 +624,7 @@ export class AdminService {
             specialityAr: isRadiology ? 'استقبال وحجز مركز الأشعة' : 'استقبال وسحب عينات المعمل',
             facilityEn,
             facilityAr,
+            ...loc,
             mustChangePassword: false,
           },
           select: SELECT,
@@ -458,6 +660,7 @@ export class AdminService {
                 (isRadiology ? 'أخصائي أشعة تشخيصية معتمد' : 'أخصائي تحاليل طبية معتمد'),
               facilityEn,
               facilityAr,
+              ...loc,
               mustChangePassword: false,
             },
             select: SELECT,
@@ -483,6 +686,7 @@ export class AdminService {
               specialityAr: isRadiology ? 'مدير مركز الأشعة والتقارير' : 'مدير المعمل ومعتمد النتائج النهائية',
               facilityEn,
               facilityAr,
+              ...loc,
               mustChangePassword: false,
             },
             select: SELECT,
@@ -512,6 +716,7 @@ export class AdminService {
             specialityAr: dto.specialityAr?.trim() || 'مدير الصيدلية والصيدلي المسؤول',
             facilityEn,
             facilityAr,
+            ...loc,
             mustChangePassword: false,
           },
           select: SELECT,
@@ -536,6 +741,7 @@ export class AdminService {
               specialityAr: 'صيدلي صرف الروشتات وحصص المزمن',
               facilityEn,
               facilityAr,
+              ...loc,
               mustChangePassword: false,
             },
             select: SELECT,
@@ -561,6 +767,7 @@ export class AdminService {
             specialityAr: 'عمليات الطوارئ والتنويم بالمستشفى',
             facilityEn,
             facilityAr,
+            ...loc,
             mustChangePassword: false,
           },
           select: SELECT,
@@ -585,6 +792,7 @@ export class AdminService {
               specialityAr: dto.specialityAr?.trim() || 'طب الطوارئ والرعاية الحرجة',
               facilityEn,
               facilityAr,
+              ...loc,
               mustChangePassword: false,
             },
             select: SELECT,
@@ -650,6 +858,24 @@ export class AdminController {
   @Post('facilities')
   @Roles(Role.ADMIN)
   createFacilityBundle(@Body() dto: CreateFacilityBundleDto) { return this.svc.createFacilityBundle(dto); }
+  @Get('address-requests')
+  @Roles(Role.ADMIN)
+  listAddressRequests() { return this.svc.listAddressChangeRequests(); }
+  @Post('address-requests/:id/approve')
+  @Roles(Role.ADMIN)
+  approveAddress(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReviewAddressChangeDto, @CurrentUser() u: AuthUser) {
+    return this.svc.decideAddressChangeRequest(id, 'APPROVED', u.id, dto?.note);
+  }
+  @Post('address-requests/:id/reject')
+  @Roles(Role.ADMIN)
+  rejectAddress(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReviewAddressChangeDto, @CurrentUser() u: AuthUser) {
+    return this.svc.decideAddressChangeRequest(id, 'REJECTED', u.id, dto?.note);
+  }
+  @Patch(':id/location')
+  @Roles(Role.ADMIN)
+  updateLocation(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateLocationDto) {
+    return this.svc.updateStaffLocation(id, dto);
+  }
   @Get('audit-logs') auditLogs() { return this.svc.getAuditLogs(); }
   @Get('security-posture') securityPosture() { return this.svc.getSecurityPosture(); }
   @Post() @Roles(Role.ADMIN) create(@Body() dto: CreateStaffDto) { return this.svc.create(dto); }
@@ -658,5 +884,5 @@ export class AdminController {
   @Delete(':id') @Roles(Role.ADMIN) deleteStaff(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.deleteStaff(id, u.id); }
 }
 
-@Module({ controllers: [AdminController], providers: [AdminService] })
+@Module({ imports: [NotificationsModule], controllers: [AdminController], providers: [AdminService] })
 export class AdminModule {}

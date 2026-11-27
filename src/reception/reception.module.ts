@@ -320,7 +320,7 @@ export class ReceptionService {
       ? `${actorUser.fullNameAr} (${actorUser.fullNameEn})`
       : (actor?.role ?? 'RECEPTIONIST');
 
-    return this.prisma.patient.update({
+    const updated = await this.prisma.patient.update({
       where: { id: patientId },
       data: {
         deletionRequestedAt: new Date(),
@@ -330,6 +330,20 @@ export class ReceptionService {
       },
       select: PATIENT_PUBLIC_SELECT,
     });
+
+    void this.notifs
+      .notifyRoles(
+        [Role.EXECUTIVE],
+        NotifType.GENERAL,
+        `Citizen Account Deletion Approval Needed (${updated.mti})`,
+        `طلب حذف مواطن بانتظار اعتماد الوزارة (${updated.mti})`,
+        `Reception requested permanent deletion for ${updated.fullNameEn} (${updated.mti}): ${reason.trim()}`,
+        `رفع الاستقبال طلب حذف حساب المواطن ${updated.fullNameAr} (${updated.mti}): ${reason.trim()}`,
+        { category: 'CITIZEN_DELETION', patientId, href: '/analytics/ministries', severity: 'WARNING' },
+      )
+      .catch(() => undefined);
+
+    return updated;
   }
 
   async rejectCitizenDeletion(patientId: string) {

@@ -1,11 +1,12 @@
 import { Body, Controller, Get, Injectable, NotFoundException, Param, ParseUUIDPipe, Patch, Post, ConflictException, Module } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Role, VisitStatus } from '@prisma/client';
+import { NotifType, Role, VisitStatus } from '@prisma/client';
 import { IsBoolean, IsEnum, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
 import { PATIENT_PUBLIC_SELECT } from '../patients/patient.select';
 import { FirebaseAdminService } from '../firebase/firebase-admin.service';
+import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
 
 export class CreateTicketDto {
   @IsUUID() patientId: string;
@@ -26,6 +27,7 @@ export class QueueService {
   constructor(
     private prisma: PrismaService,
     private firebase: FirebaseAdminService,
+    private notifs: NotificationsService,
   ) {}
 
   private async broadcastQueueSnapshot(doctorId: string | null | undefined) {
@@ -125,6 +127,19 @@ export class QueueService {
     });
     const [hydrated] = await this.hydrateVisits([created]);
     void this.broadcastQueueSnapshot(hydrated.doctorId);
+    if (hydrated.doctorId) {
+      void this.notifs
+        .sendToUser(
+          hydrated.doctorId,
+          NotifType.GENERAL,
+          `${dto.isEmergency ? '🚨 Emergency' : 'New'} Patient in Clinic Queue (${hydrated.ticketNo})`,
+          `${dto.isEmergency ? '🚨 حالة طارئة' : 'مريض جديد'} في طابور العيادة (${hydrated.ticketNo})`,
+          `${hydrated.patient?.fullNameEn ?? 'Patient'} checked in: ${dto.reasonEn}`,
+          `${hydrated.patient?.fullNameAr ?? 'المواطن'} في انتظار الكشف: ${dto.reasonAr}`,
+          { category: 'CLINIC_QUEUE', visitId: hydrated.id, ticketNo: hydrated.ticketNo, href: '/doctor/consultation', severity: dto.isEmergency ? 'CRITICAL' : 'INFO' },
+        )
+        .catch(() => undefined);
+    }
     return hydrated;
   }
 
@@ -158,6 +173,20 @@ export class QueueService {
         if (!updated) throw new NotFoundException();
         const [hydrated] = await this.hydrateVisits([updated]);
         void this.broadcastQueueSnapshot(hydrated.doctorId);
+        const citizenUser = await this.prisma.user.findUnique({ where: { patientId: updated.patientId }, select: { id: true } });
+        if (citizenUser) {
+          void this.notifs
+            .sendToUser(
+              citizenUser.id,
+              NotifType.GENERAL,
+              `Your Turn Now (${updated.ticketNo})`,
+              `حان دورك الآن للدخول للطبيب (${updated.ticketNo})`,
+              `Please proceed to ${hydrated.doctor?.fullNameEn ?? 'the physician clinic'} consultation room now.`,
+              `يرجى التوجه الآن لغرفة الكشف مع ${hydrated.doctor?.fullNameAr ?? 'الطبيب المعالج'}.`,
+              { category: 'QUEUE_CALLED', visitId: updated.id, ticketNo: updated.ticketNo },
+            )
+            .catch(() => undefined);
+        }
         return hydrated;
       }
     }
@@ -233,5 +262,5 @@ export class QueueController {
   }
 }
 
-@Module({ controllers: [QueueController], providers: [QueueService] })
+@Module({ imports: [NotificationsModule], controllers: [QueueController], providers: [QueueService] })
 export class QueueModule {}

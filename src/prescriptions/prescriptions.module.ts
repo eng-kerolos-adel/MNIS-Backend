@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
 import { PATIENT_PUBLIC_SELECT } from '../patients/patient.select';
+import { parseMedicationSchedule } from '../common/medication-schedule.util';
 import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
 
 export class RxItemDto {
@@ -195,6 +196,34 @@ export class PrescriptionsService {
     }
 
     const [hydrated] = await this.hydrateStaff([signed]);
+
+    const [citizenUser, patientRow] = await Promise.all([
+      this.prisma.user.findUnique({ where: { patientId: signed.patientId }, select: { id: true } }),
+      this.prisma.patient.findUnique({ where: { id: signed.patientId }, select: { fullNameAr: true, fullNameEn: true, mti: true } }),
+    ]);
+    await Promise.all([
+      this.notifs.notifyRoles(
+        [Role.PHARMACIST],
+        NotifType.NEW_PRESCRIPTION_SIGNED,
+        `New Signed Prescription #${signed.code}`,
+        `روشتة إلكترونية موقعة جديدة #${signed.code}`,
+        `Dr. ${hydrated.physician?.fullNameEn ?? 'Physician'} signed Rx #${signed.code} for ${patientRow?.fullNameEn ?? 'Citizen'} (${signed.items.length} item(s)).`,
+        `وقع د. ${hydrated.physician?.fullNameAr ?? 'الطبيب'} روشتة جديدة للمواطن ${patientRow?.fullNameAr ?? ''} (${signed.items.length} صنف دوائي).`,
+        { category: 'RX_SIGNED', prescriptionId: signed.id, code: signed.code, href: '/pharmacy/rx-verification' },
+      ),
+      citizenUser
+        ? this.notifs.sendToUser(
+            citizenUser.id,
+            NotifType.GENERAL,
+            `New E-Prescription #${signed.code}`,
+            `تم إصدار روشتة جديدة #${signed.code}`,
+            `Your physician signed e-prescription #${signed.code} (${signed.diagnosisEn}). It is ready for pharmacy verification.`,
+            `أصدر طبيبك الروشتة الإلكترونية رقم #${signed.code} (${signed.diagnosisAr}) وأُرسلت للصيدلية للصرف.`,
+            { category: 'RX_SIGNED', prescriptionId: signed.id, code: signed.code },
+          )
+        : Promise.resolve(),
+    ]).catch(() => undefined);
+
     return hydrated;
   }
 
@@ -212,7 +241,33 @@ export class PrescriptionsService {
     const existing = await this.prisma.prescription.findUnique({ where: { id }, include: { items: true } });
     if (!existing) throw new NotFoundException('RX_NOT_FOUND');
     this.assertValidSignature(existing);
-    return this.transition(id, 'SIGNED', { status: 'VERIFIED', verifiedById: u.id, verifiedAt: new Date() });
+    const verified = await this.transition(id, 'SIGNED', { status: 'VERIFIED', verifiedById: u.id, verifiedAt: new Date() });
+
+    const citizenUser = await this.prisma.user.findUnique({ where: { patientId: verified.patientId }, select: { id: true } });
+    await Promise.all([
+      this.notifs.notifyRoles(
+        [Role.PHARMACIST],
+        NotifType.GENERAL,
+        `Verified Rx Ready to Dispense #${verified.code}`,
+        `روشتة معتمدة جاهزة للصرف #${verified.code}`,
+        `Prescription #${verified.code} for ${verified.patient?.fullNameEn ?? 'Citizen'} is verified and queued for dispensing.`,
+        `تم التحقق الصيدلي من الروشتة #${verified.code} (${verified.patient?.fullNameAr ?? ''}) وهي جاهزة للصرف الفوري.`,
+        { category: 'RX_VERIFIED', prescriptionId: verified.id, code: verified.code, href: '/pharmacy/dispensing-queue' },
+      ),
+      citizenUser
+        ? this.notifs.sendToUser(
+            citizenUser.id,
+            NotifType.GENERAL,
+            'Prescription Verified by Pharmacist',
+            'تمت مراجعة روشتتك واعتمادها بالصيدلية',
+            `Prescription #${verified.code} has been clinically verified and is ready for dispensing.`,
+            `تم التحقق من سلامة الروشتة #${verified.code} وتجهيزها للصرف من الصيدلية.`,
+            { category: 'RX_VERIFIED', prescriptionId: verified.id, code: verified.code },
+          )
+        : Promise.resolve(),
+    ]).catch(() => undefined);
+
+    return verified;
   }
 
   async dispense(id: string, u: AuthUser) {
@@ -264,17 +319,72 @@ export class PrescriptionsService {
       });
     }
 
-    // Notify Citizen on Mobile App
+    // Auto-create periodic MedicationReminder schedules for every dispensed medication item
+    const dispensedAt = dispensed.dispensedAt ?? new Date();
+    const reminderSummaries: Array<{
+      id: string;
+      drugNameAr: string;
+      drugNameEn: string;
+      dose: string;
+      scheduleTimes: string[];
+      durationDays: number;
+    }> = [];
+    for (const item of dispensed.items) {
+      const parsed = parseMedicationSchedule(item.frequencyEn, item.frequencyAr, item.durationDays, dispensedAt);
+      const reminder = await this.prisma.medicationReminder.upsert({
+        where: { prescriptionItemId: item.id },
+        create: {
+          patientId: dispensed.patientId,
+          prescriptionId: dispensed.id,
+          prescriptionItemId: item.id,
+          drugNameEn: item.nameEn,
+          drugNameAr: item.nameAr,
+          dose: item.dose,
+          frequencyEn: item.frequencyEn,
+          frequencyAr: item.frequencyAr,
+          timesPerDay: parsed.timesPerDay,
+          intervalHours: parsed.intervalHours,
+          scheduleTimes: parsed.scheduleTimes,
+          durationDays: item.durationDays,
+          startsAt: parsed.startsAt,
+          endsAt: parsed.endsAt,
+          isActive: true,
+        },
+        update: {
+          timesPerDay: parsed.timesPerDay,
+          intervalHours: parsed.intervalHours,
+          scheduleTimes: parsed.scheduleTimes,
+          startsAt: parsed.startsAt,
+          endsAt: parsed.endsAt,
+          isActive: true,
+        },
+      });
+      reminderSummaries.push({
+        id: reminder.id,
+        drugNameAr: item.nameAr,
+        drugNameEn: item.nameEn,
+        dose: item.dose,
+        scheduleTimes: parsed.scheduleTimes,
+        durationDays: item.durationDays,
+      });
+    }
+
+    // Notify Citizen on Mobile App & trigger local periodic medication reminders
     const citizenUser = await this.prisma.user.findUnique({ where: { patientId: dispensed.patientId } });
     if (citizenUser) {
       await this.notifs.sendToUser(
         citizenUser.id,
         NotifType.PRESCRIPTION_DISPENSED,
-        'Prescription Dispensed',
-        'تم صرف الروشتة الدوائية',
-        `Your prescription #${dispensed.code} (${dispensed.diagnosisEn}) has been dispensed at the pharmacy.`,
-        `تم صرف الروشتة رقم #${dispensed.code} (${dispensed.diagnosisAr}) من الصيدلية بنجاح.`,
-        { prescriptionId: dispensed.id, code: dispensed.code }
+        'Prescription Dispensed — Dose Reminders Active',
+        'تم صرف الروشتة وتفعيل منبّه مواعيد الأدوية',
+        `Your prescription #${dispensed.code} has been dispensed. ${reminderSummaries.length} periodic medication reminder(s) are now active in your app.`,
+        `تم صرف الروشتة رقم #${dispensed.code} (${dispensed.diagnosisAr}) بنجاح وتفعيل تنبيهات دورية لمواعيد (${reminderSummaries.length}) دواء في تطبيقك.`,
+        {
+          prescriptionId: dispensed.id,
+          code: dispensed.code,
+          remindersCount: reminderSummaries.length,
+          reminders: reminderSummaries,
+        },
       );
     }
 

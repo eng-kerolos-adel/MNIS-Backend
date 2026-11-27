@@ -14,18 +14,22 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { AppointmentStatus, Role } from '@prisma/client';
+import { AppointmentStatus, NotifType, Role } from '@prisma/client';
 import {
   IsInt,
-  IsISO8601,
+  IsNumber,
   IsOptional,
   IsString,
+  Length,
   Matches,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { Audit, AuthUser, CurrentUser, Roles } from '../common/decorators';
+import { getGovernorateMeta, haversineKm, inferLocationFromFacilityText, normalizeGovernorate, resolveGovernorateFromCoords } from '../common/egypt-geo.util';
+import { NotificationsModule, NotificationsService } from '../notifications/notifications.module';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  DTOs
@@ -62,6 +66,48 @@ export class DeleteScheduleDto {
   /** UUID of the DoctorSchedule row to delete. */
   @IsString()
   scheduleId: string;
+}
+
+export class CreateAddressChangeDto {
+  @IsString()
+  @MaxLength(80)
+  newGovernorate: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  newCity?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  newDistrict?: string;
+
+  @IsString()
+  @Length(3, 200)
+  newAddressAr: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  newAddressEn?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  newLatitude?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  newLongitude?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reason?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,7 +171,10 @@ function dayBounds(dateStr: string): { dayStart: Date; dayEnd: Date } {
 
 @Injectable()
 export class DoctorScheduleService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifs: NotificationsService,
+  ) {}
 
   // ── Schedule CRUD ──────────────────────────────────────────────────────────
 
@@ -300,8 +349,92 @@ export class DoctorScheduleService {
 
   // ── Doctor & Lab listing ───────────────────────────────────────────────────
 
+  private resolveGeoContext(query?: {
+    lat?: string;
+    lng?: string;
+    governorate?: string;
+    strictGeo?: string;
+    radiusKm?: string;
+  }) {
+    const lat = query?.lat !== undefined ? Number(query.lat) : NaN;
+    const lng = query?.lng !== undefined ? Number(query.lng) : NaN;
+    const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
+    const resolved = hasCoords ? resolveGovernorateFromCoords(lat, lng) : null;
+    const targetGov =
+      normalizeGovernorate(query?.governorate) ?? resolved?.code ?? null;
+    const strictGeo = query?.strictGeo === 'true';
+    const radiusKmRaw = query?.radiusKm ? Number(query.radiusKm) : 35;
+    const radiusKm = Number.isFinite(radiusKmRaw) && radiusKmRaw > 0 ? radiusKmRaw : 35;
+    return { hasCoords, lat, lng, targetGov, strictGeo, radiusKm, resolved };
+  }
+
+  private enrichAndFilterByGeo<
+    T extends {
+      governorate?: string | null;
+      city?: string | null;
+      district?: string | null;
+      addressEn?: string | null;
+      addressAr?: string | null;
+      latitude?: number | null;
+      longitude?: number | null;
+      facilityEn?: string | null;
+      facilityAr?: string | null;
+    },
+  >(
+    rows: T[],
+    geo: ReturnType<DoctorScheduleService['resolveGeoContext']>,
+  ) {
+    const enriched = rows.map((row) => {
+      const inferred = inferLocationFromFacilityText(row.facilityEn, row.facilityAr);
+      const gov =
+        normalizeGovernorate(row.governorate) ??
+        normalizeGovernorate(row.addressAr) ??
+        inferred.governorate;
+      const meta = getGovernorateMeta(gov);
+      const itemLat = row.latitude ?? meta?.lat ?? inferred.latitude;
+      const itemLng = row.longitude ?? meta?.lng ?? inferred.longitude;
+      const distanceKm = geo.hasCoords
+        ? haversineKm(geo.lat, geo.lng, itemLat, itemLng)
+        : null;
+      return {
+        ...row,
+        governorate: gov,
+        governorateAr: meta?.ar ?? gov,
+        governorateEn: meta?.en ?? gov,
+        city: row.city ?? meta?.en ?? inferred.city,
+        district: row.district ?? null,
+        addressAr: row.addressAr ?? inferred.addressAr,
+        addressEn: row.addressEn ?? inferred.addressEn,
+        latitude: itemLat,
+        longitude: itemLng,
+        distanceKm,
+      };
+    });
+
+    const filtered =
+      geo.strictGeo && (geo.targetGov || geo.hasCoords)
+        ? enriched.filter((item) => {
+            const govMatch = geo.targetGov ? item.governorate === geo.targetGov : false;
+            const distMatch =
+              item.distanceKm !== null ? item.distanceKm <= geo.radiusKm : false;
+            return govMatch || distMatch;
+          })
+        : enriched;
+
+    if (geo.hasCoords) {
+      filtered.sort((a, b) => (a.distanceKm ?? 9999) - (b.distanceKm ?? 9999));
+    }
+    return filtered;
+  }
+
   /** Lists all active standalone Clinic physicians nationwide (excludes inpatient Hospital physicians). */
-  async listDoctors() {
+  async listDoctors(query?: {
+    lat?: string;
+    lng?: string;
+    governorate?: string;
+    strictGeo?: string;
+    radiusKm?: string;
+  }) {
     const [doctors, hospStaff] = await Promise.all([
       this.prisma.user.findMany({
         where: { role: Role.DOCTOR, isActive: true },
@@ -314,6 +447,13 @@ export class DoctorScheduleService {
           facilityEn: true,
           facilityAr: true,
           licenseNo: true,
+          governorate: true,
+          city: true,
+          district: true,
+          addressEn: true,
+          addressAr: true,
+          latitude: true,
+          longitude: true,
         },
         orderBy: { fullNameEn: 'asc' },
       }),
@@ -329,13 +469,22 @@ export class DoctorScheduleService {
         .filter((x): x is string => Boolean(x)),
     );
 
-    return doctors
+    const clinicDoctors = doctors
       .filter((d) => !d.facilityEn || !hospSet.has(d.facilityEn.trim().toLowerCase()))
       .map((d) => ({ ...d, facilityType: 'CLINIC' as const }));
+
+    const geo = this.resolveGeoContext(query);
+    return this.enrichAndFilterByGeo(clinicDoctors, geo);
   }
 
   /** Lists all registered laboratories across Egypt with their reception officer ID for appointment routing. */
-  async listLabs() {
+  async listLabs(query?: {
+    lat?: string;
+    lng?: string;
+    governorate?: string;
+    strictGeo?: string;
+    radiusKm?: string;
+  }) {
     const labStaff = await this.prisma.user.findMany({
       where: { role: Role.LAB_TECH, isActive: true },
       select: {
@@ -347,6 +496,13 @@ export class DoctorScheduleService {
         facilityEn: true,
         facilityAr: true,
         licenseNo: true,
+        governorate: true,
+        city: true,
+        district: true,
+        addressEn: true,
+        addressAr: true,
+        latitude: true,
+        longitude: true,
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -364,6 +520,15 @@ export class DoctorScheduleService {
       staffNameAr: string;
       licenseNo: string | null;
       labSubType: 'ANALYSIS' | 'RADIOLOGY';
+      facilityEn: string | null;
+      facilityAr: string | null;
+      governorate: string | null;
+      city: string | null;
+      district: string | null;
+      addressEn: string | null;
+      addressAr: string | null;
+      latitude: number | null;
+      longitude: number | null;
     }> = [];
     for (const u of sorted) {
       const key = u.facilityEn || u.id;
@@ -380,9 +545,88 @@ export class DoctorScheduleService {
         staffNameAr: u.fullNameAr,
         licenseNo: u.licenseNo,
         labSubType: isRadiology ? 'RADIOLOGY' : 'ANALYSIS',
+        facilityEn: u.facilityEn,
+        facilityAr: u.facilityAr,
+        governorate: u.governorate,
+        city: u.city,
+        district: u.district,
+        addressEn: u.addressEn,
+        addressAr: u.addressAr,
+        latitude: u.latitude,
+        longitude: u.longitude,
       });
     }
-    return out;
+    const geo = this.resolveGeoContext(query);
+    return this.enrichAndFilterByGeo(out, geo);
+  }
+
+  resolveLocation(lat: number, lng: number) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new BadRequestException('INVALID_COORDINATES');
+    }
+    const res = resolveGovernorateFromCoords(lat, lng);
+    return {
+      governorateCode: res.code,
+      governorateAr: res.ar,
+      governorateEn: res.en,
+      distanceKm: res.distanceKm,
+      latitude: lat,
+      longitude: lng,
+    };
+  }
+
+  async createAddressChangeRequest(doctorId: string, dto: CreateAddressChangeDto) {
+    const doc = await this.prisma.user.findUnique({
+      where: { id: doctorId },
+      select: { id: true, fullNameAr: true, fullNameEn: true, facilityAr: true, facilityEn: true, addressAr: true, addressEn: true, governorate: true },
+    });
+    if (!doc) throw new NotFoundException('DOCTOR_NOT_FOUND');
+
+    const normGov = normalizeGovernorate(dto.newGovernorate) ?? dto.newGovernorate.trim().toUpperCase();
+    const meta = getGovernorateMeta(normGov);
+    const created = await this.prisma.addressChangeRequest.create({
+      data: {
+        doctorId,
+        currentAddressAr: doc.addressAr || doc.governorate || doc.facilityAr || null,
+        currentAddressEn: doc.addressEn || doc.governorate || doc.facilityEn || null,
+        newGovernorate: normGov,
+        newCity: dto.newCity?.trim() || meta?.en || null,
+        newDistrict: dto.newDistrict?.trim() || null,
+        newAddressAr: dto.newAddressAr.trim(),
+        newAddressEn: dto.newAddressEn?.trim() || dto.newAddressAr.trim(),
+        newLatitude: typeof dto.newLatitude === 'number' ? dto.newLatitude : meta?.lat ?? null,
+        newLongitude: typeof dto.newLongitude === 'number' ? dto.newLongitude : meta?.lng ?? null,
+        reason: dto.reason?.trim() || null,
+      },
+    });
+
+    await this.notifs
+      .notifyRoles(
+        [Role.ADMIN],
+        NotifType.ADDRESS_CHANGE_REQUEST,
+        `Doctor Address Change Request — ${doc.fullNameEn}`,
+        `طلب تغيير عنوان عيادة — د. ${doc.fullNameAr}`,
+        `Dr. ${doc.fullNameEn} requested relocation to ${dto.newAddressEn?.trim() || dto.newAddressAr.trim()} (${meta?.en ?? normGov}).`,
+        `طلب د. ${doc.fullNameAr} (${doc.facilityAr ?? ''}) تحديث عنوان العيادة إلى: ${dto.newAddressAr.trim()} (${meta?.ar ?? normGov}).`,
+        {
+          category: 'ADDRESS_CHANGE',
+          requestId: created.id,
+          doctorId,
+          href: '/admin/users',
+          severity: 'WARNING',
+        },
+      )
+      .catch(() => undefined);
+
+    return created;
+  }
+
+  listMyAddressChangeRequests(doctorId: string) {
+    return this.prisma.addressChangeRequest.findMany({
+      where: { doctorId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
   }
 
   /** Lists all registered hospitals across Egypt for referrals and hospital directory. */
@@ -445,8 +689,14 @@ export class DoctorScheduleController {
   @Audit('SCHEDULE')
   @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH, Role.PATIENT)
   @Get('doctors')
-  listDoctors() {
-    return this.svc.listDoctors();
+  listDoctors(
+    @Query('lat') lat?: string,
+    @Query('lng') lng?: string,
+    @Query('governorate') governorate?: string,
+    @Query('strictGeo') strictGeo?: string,
+    @Query('radiusKm') radiusKm?: string,
+  ) {
+    return this.svc.listDoctors({ lat, lng, governorate, strictGeo, radiusKm });
   }
 
   /**
@@ -456,8 +706,35 @@ export class DoctorScheduleController {
   @Audit('SCHEDULE')
   @Roles(Role.RECEPTIONIST, Role.DOCTOR, Role.LAB_TECH, Role.PATIENT)
   @Get('labs')
-  listLabs() {
-    return this.svc.listLabs();
+  listLabs(
+    @Query('lat') lat?: string,
+    @Query('lng') lng?: string,
+    @Query('governorate') governorate?: string,
+    @Query('strictGeo') strictGeo?: string,
+    @Query('radiusKm') radiusKm?: string,
+  ) {
+    return this.svc.listLabs({ lat, lng, governorate, strictGeo, radiusKm });
+  }
+
+  @Audit('SCHEDULE')
+  @Roles(Role.PATIENT, Role.DOCTOR, Role.RECEPTIONIST, Role.ADMIN)
+  @Get('resolve-location')
+  resolveLocation(@Query('lat') lat: string, @Query('lng') lng: string) {
+    return this.svc.resolveLocation(Number(lat), Number(lng));
+  }
+
+  @Audit('SCHEDULE')
+  @Roles(Role.DOCTOR)
+  @Post('address-change-requests')
+  requestAddressChange(@Body() dto: CreateAddressChangeDto, @CurrentUser() user: AuthUser) {
+    return this.svc.createAddressChangeRequest(user.id, dto);
+  }
+
+  @Audit('SCHEDULE')
+  @Roles(Role.DOCTOR)
+  @Get('address-change-requests/my')
+  myAddressChangeRequests(@CurrentUser() user: AuthUser) {
+    return this.svc.listMyAddressChangeRequests(user.id);
   }
 
   /**
@@ -537,6 +814,7 @@ export class DoctorScheduleController {
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Module({
+  imports: [NotificationsModule],
   controllers: [DoctorScheduleController],
   providers: [DoctorScheduleService],
   exports: [DoctorScheduleService],

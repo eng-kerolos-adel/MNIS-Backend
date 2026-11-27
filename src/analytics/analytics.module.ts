@@ -1,14 +1,34 @@
 import {
+  Body,
   Controller,
   Get,
   Injectable,
   Module,
+  Post,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
+import { IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { Audit, Roles } from '../common/decorators';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { EpidemiologyEngineService } from './epidemiology-engine.service';
+
+export class StrategicAssistantDto {
+  @IsString() @MinLength(2) @MaxLength(800) prompt: string;
+  @IsOptional() @IsIn(['ar', 'en']) locale?: 'ar' | 'en';
+  @IsOptional() @IsString() @MaxLength(80) focusGovernorate?: string;
+}
+
+export class StrategicDirectiveDto {
+  @IsString() @MaxLength(80) governorate: string;
+  @IsIn(['ELEVATED', 'CRITICAL']) severity: 'ELEVATED' | 'CRITICAL';
+  @IsString() @MinLength(3) @MaxLength(160) titleAr: string;
+  @IsString() @MinLength(3) @MaxLength(160) titleEn: string;
+  @IsString() @MinLength(5) @MaxLength(600) messageAr: string;
+  @IsString() @MinLength(5) @MaxLength(600) messageEn: string;
+}
 
 // --- Service ---
 @Injectable()
@@ -431,7 +451,10 @@ export class AnalyticsService {
 @Roles(Role.EXECUTIVE)
 @Controller('analytics')
 export class AnalyticsController {
-  constructor(private svc: AnalyticsService) {}
+  constructor(
+    private svc: AnalyticsService,
+    private epi: EpidemiologyEngineService,
+  ) {}
 
   @Get('overview')
   getOverview() { return this.svc.getOverview(); }
@@ -458,13 +481,31 @@ export class AnalyticsController {
   @Get('kpis')
   @Roles(Role.EXECUTIVE)
   getKpis() { return this.svc.getKpis(); }
+
+  @Get('strategic-forecast')
+  @Roles(Role.EXECUTIVE)
+  getStrategicForecast() {
+    return this.epi.computeStrategicForecast();
+  }
+
+  @Post('strategic-assistant')
+  @Roles(Role.EXECUTIVE)
+  askStrategicAssistant(@Body() dto: StrategicAssistantDto) {
+    return this.epi.askStrategicAssistant(dto.prompt, dto.locale ?? 'ar', dto.focusGovernorate);
+  }
+
+  @Post('strategic-directive')
+  @Roles(Role.EXECUTIVE)
+  broadcastDirective(@Body() dto: StrategicDirectiveDto) {
+    return this.epi.broadcastStrategicDirective(dto);
+  }
 }
 
 // --- Module ---
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, NotificationsModule],
   controllers: [AnalyticsController],
-  providers: [AnalyticsService],
-  exports: [AnalyticsService],
+  providers: [AnalyticsService, EpidemiologyEngineService],
+  exports: [AnalyticsService, EpidemiologyEngineService],
 })
 export class AnalyticsModule {}
